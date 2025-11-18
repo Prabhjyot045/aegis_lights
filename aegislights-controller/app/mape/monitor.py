@@ -84,10 +84,17 @@ SessionFactory = Callable[[], Any]
 
 
 class Monitor:
-    def __init__(self, runtime_graph: RuntimeGraph, db_session_factory: Optional[SessionFactory]) -> None:
+    def __init__(
+        self,
+        runtime_graph: RuntimeGraph,
+        db_session_factory: Optional[SessionFactory],
+        *,
+        post_update_hook: Optional[Callable[[], None]] = None,
+    ) -> None:
         self._runtime_graph = runtime_graph
         self._db_session_factory = db_session_factory
         self._logger = logger
+        self._post_update_hook = post_update_hook
 
     @property
     def runtime_graph(self) -> RuntimeGraph:
@@ -108,6 +115,19 @@ class Monitor:
 
         if snapshot.globals is not None:
             self._persist_global_metrics(snapshot)
+
+        self._run_post_update_hook()
+
+    def register_post_update_hook(self, hook: Callable[[], None]) -> None:
+        self._post_update_hook = hook
+
+    def _run_post_update_hook(self) -> None:
+        if self._post_update_hook is None:
+            return
+        try:
+            self._post_update_hook()
+        except Exception:  # pragma: no cover - defensive guard
+            self._logger.exception("Post-update hook failed")
 
     def _persist_global_metrics(self, snapshot: SimulatorSnapshot) -> None:
         if snapshot.globals is None:

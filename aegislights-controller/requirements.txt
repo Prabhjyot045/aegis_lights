@@ -2,7 +2,10 @@ fastapi
 uvicorn[standard]
 networkx
 pydantic
+pydantic-settings
 sqlalchemy
 alembic
 jinja2
 pytest
+numpy
+requests

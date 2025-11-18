@@ -35,7 +35,7 @@ The simulator only needs to know:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.adapters.simulator_client import SimulatorSnapshot
 from app.mape.monitor import Monitor, get_monitor_singleton
@@ -50,5 +50,39 @@ async def ingest_snapshot(
 ) -> dict[str, str]:
   """Receive a simulator snapshot and hand it to the Monitor."""
 
+  _validate_snapshot(snapshot)
   await monitor.handle_snapshot(snapshot)
   return {"status": "accepted"}
+
+
+def _validate_snapshot(snapshot: SimulatorSnapshot) -> None:
+  if not snapshot.edges:
+    raise HTTPException(
+      status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+      detail="Snapshot must include at least one edge metric",
+    )
+
+  for idx, edge in enumerate(snapshot.edges):
+    if edge.queue_length_veh < 0 or edge.mean_delay_s < 0 or edge.throughput_veh < 0:
+      raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Edge metrics must be non-negative (edge index {idx})",
+      )
+
+  if snapshot.globals is None:
+    return
+
+  globals_payload = snapshot.globals
+  non_negative_fields = (
+    "avg_trip_time_s",
+    "p95_trip_time_s",
+    "total_spillbacks",
+    "incident_count",
+  )
+  for field_name in non_negative_fields:
+    value = getattr(globals_payload, field_name)
+    if value is not None and value < 0:
+      raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Global metric '{field_name}' must be non-negative",
+      )

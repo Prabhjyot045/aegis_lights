@@ -1,58 +1,9 @@
-"""
-Copilot instructions:
-
-Implement MAPE working models for the AegisLights controller.
-
-These are runtime models shared across Analyze, Plan, and Execute. They do NOT replace
-the graph, but are derived views of it.
-
-Requirements:
-
-1) Define simple Pydantic or dataclass models:
-
-   - HotspotEdge:
-       edge_id: str
-       cost: float
-       queue: float
-       delay: float
-       spillback: bool
-       incident: bool
-
-   - BypassPath:
-       id: str
-       source: str  # upstream intersection id
-       target: str  # downstream intersection id
-       edge_ids: list[str]
-       total_cost: float
-
-   - IntersectionContext:
-       intersection_id: str
-       features: dict[str, float | int | bool]
-       # features may include local queues, delays, hotspot flags, incident flags, etc.
-
-2) Implement a container class `MAPEWorkingState` that stores:
-
-   - hotspots: list[HotspotEdge]
-   - bypass_paths: list[BypassPath]
-   - intersection_contexts: dict[str, IntersectionContext]
-
-   Methods:
-   - `update_hotspots(hotspots: list[HotspotEdge])`
-   - `update_bypass_paths(paths: list[BypassPath])`
-   - `update_intersection_contexts(contexts: dict[str, IntersectionContext])`
-
-3) This class should be in-memory only and thread-safe enough for simple use:
-   - use a threading.Lock around updates to the collections.
-
-4) The Analyze component will populate MAPEWorkingState.
-   The Plan and visualization layers may read from it.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from threading import Lock
-from typing import Dict, List, MutableMapping, Sequence, Union
+from typing import Dict, List, MutableMapping, Optional, Sequence, Union
 
 
 FeatureValue = Union[float, int, bool]
@@ -113,3 +64,38 @@ class MAPEWorkingState:
    def get_intersection_contexts(self) -> Dict[str, IntersectionContext]:
       with self._lock:
          return dict(self._intersection_contexts)
+
+
+@dataclass(frozen=True)
+class GlobalMetricsSnapshot:
+   timestamp: datetime
+   avg_trip_time_s: Optional[float] = None
+   p95_trip_time_s: Optional[float] = None
+   total_spillbacks: Optional[int] = None
+   incident_count: Optional[int] = None
+
+
+class RecentGlobalMetrics:
+   def __init__(self) -> None:
+      self._latest: Optional[GlobalMetricsSnapshot] = None
+      self._lock = Lock()
+
+   def update(self, snapshot: GlobalMetricsSnapshot) -> None:
+      with self._lock:
+         self._latest = snapshot
+
+   def get_latest(self) -> Optional[GlobalMetricsSnapshot]:
+      with self._lock:
+         return self._latest
+
+   def to_metric_dict(self) -> Dict[str, float]:
+      with self._lock:
+         snapshot = self._latest
+      if snapshot is None:
+         return {}
+      metrics: Dict[str, float] = {}
+      metrics["avg_trip_time_s"] = float(snapshot.avg_trip_time_s or 0.0)
+      metrics["p95_trip_time_s"] = float(snapshot.p95_trip_time_s or 0.0)
+      metrics["spillbacks_per_hour"] = float(snapshot.total_spillbacks or 0.0)
+      metrics["incident_count"] = float(snapshot.incident_count or 0.0)
+      return metrics

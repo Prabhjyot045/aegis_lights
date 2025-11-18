@@ -51,6 +51,7 @@ async def graph_snapshot(
     "hotspots": [_serialize_hotspot(edge) for edge in working_state.get_hotspots()],
     "bypass_paths": [_serialize_bypass_path(path) for path in working_state.get_bypass_paths()],
     "intersection_contexts": _serialize_intersection_contexts(working_state),
+    "current_plans": _collect_plan_assignments(runtime_graph),
   }
 
 
@@ -71,3 +72,14 @@ def _serialize_intersection_contexts(working_state: MAPEWorkingState) -> Dict[st
     }
     for intersection_id, context in contexts.items()
   }
+
+
+def _collect_plan_assignments(runtime_graph: RuntimeGraph) -> Dict[str, Any]:
+  data: Dict[str, Any] = {}
+  for node_id, attrs in runtime_graph.graph.nodes(data=True):
+    if "current_plan_id" in attrs:
+      data[node_id] = {
+        "plan_id": attrs.get("current_plan_id"),
+        "reason": attrs.get("plan_reason"),
+      }
+  return data

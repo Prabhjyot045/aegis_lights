@@ -1,0 +1,20 @@
+# Python dependencies for AegisLights Controller
+
+# Core dependencies
+numpy>=1.24.0
+pandas>=2.0.0
+networkx>=3.0
+pydantic>=2.0.0
+requests>=2.31.0
+
+# Database
+# sqlite3 is included in Python standard library
+
+# Visualization
+matplotlib>=3.7.0
+plotly>=5.14.0
+
+# Development
+pytest>=7.3.0
+pytest-cov>=4.1.0
+black>=23.3.0

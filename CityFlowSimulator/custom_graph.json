@@ -1,0 +1,20 @@
+
+{
+  "rowNumber": 2,
+  "columnNumber": 3,
+  "rowDistances": [400, 400],
+  "columnDistances": [400, 400],
+  "outRowDistance": 200,
+  "outColumnDistance": 200,
+  "intersectionWidths": [
+    [30, 30, 30],
+    [30, 30, 30]
+  ],
+  "laneWidth": 4,
+  "laneMaxSpeed": 20,
+  "numLeftLanes": 1,
+  "numStraightLanes": 1,
+  "numRightLanes": 1,
+  "tlPlan": false,
+  "midPoints": 10
+}

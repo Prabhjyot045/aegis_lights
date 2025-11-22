@@ -1,15 +1,13 @@
 """Live graph visualization with recording capability."""
 
 import logging
-import threading
-import time
 from typing import Optional, Dict
 from pathlib import Path
 import matplotlib
-matplotlib.use('TkAgg')  # Use Tk backend for threading
+matplotlib.use('TkAgg')  # Use Tk backend for interactive mode
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.animation import FuncAnimation, FFMpegWriter
+from matplotlib.animation import FuncAnimation
 import networkx as nx
 
 from .graph_model import TrafficGraph
@@ -19,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class GraphVisualizer:
-    """Real-time visualization of traffic graph state."""
+    """Real-time visualization of traffic graph state using matplotlib interactive mode."""
     
     def __init__(self, graph: TrafficGraph, record: bool = False,
                  output_dir: Optional[Path] = None):
@@ -37,8 +35,8 @@ class GraphVisualizer:
         self.output_dir = Path(output_dir) if output_dir else Path("output/videos")
         
         self.running = False
-        self._thread: Optional[threading.Thread] = None
         self._frame_count = 0
+        self._animation = None
         
         # Matplotlib components
         self.fig = None
@@ -58,15 +56,18 @@ class GraphVisualizer:
             self.output_dir.mkdir(parents=True, exist_ok=True)
     
     def start(self) -> None:
-        """Start the visualizer in a separate thread."""
+        """Start the visualizer with interactive mode."""
         if self.running:
             logger.warning("Visualizer already running")
             return
         
         self.running = True
         self._initialize_plot()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
+        
+        # Turn on interactive mode
+        plt.ion()
+        plt.show(block=False)
+        
         logger.info("Graph visualizer started")
     
     def stop(self) -> None:
@@ -75,27 +76,35 @@ class GraphVisualizer:
             return
         
         self.running = False
-        if self._thread:
-            self._thread.join(timeout=5.0)
+        
+        if self._animation:
+            self._animation.event_source.stop()
         
         if self.record:
             self._finalize_recording()
         
         if self.fig:
+            plt.ioff()
             plt.close(self.fig)
         
         logger.info("Graph visualizer stopped")
     
-    def update(self, graph: TrafficGraph) -> None:
+    def update(self) -> None:
         """
-        Update visualization with new graph state.
-        
-        Args:
-            graph: Updated traffic graph
+        Manually update visualization with current graph state.
+        Call this after making changes to the graph to refresh the display.
         """
-        # Graph reference is shared, so state is automatically updated
-        # This method can be used to trigger explicit redraws if needed
-        pass
+        if self.running and self.fig:
+            self._render_frame()
+    
+    def pause_until_closed(self) -> None:
+        """
+        Keep the visualization window open until user closes it.
+        Blocks execution until window is closed.
+        """
+        if self.fig and plt.fignum_exists(self.fig.number):
+            plt.ioff()
+            plt.show()  # Blocking show
     
     def update_metrics(self, cycle: int, incidents: int, adaptations: int, avg_delay: float) -> None:
         """Update metrics display cache."""
@@ -123,24 +132,8 @@ class GraphVisualizer:
         
         logger.info(f"Layout computed with {len(self.pos)} nodes")
         
-        # Initialize video writer if recording
-        if self.record:
-            output_file = self.output_dir / f"simulation_{int(time.time())}.{self.config.video_format}"
-            self.writer = FFMpegWriter(fps=self.config.record_fps, codec=self.config.video_codec)
-            self.writer.setup(self.fig, str(output_file), dpi=100)
-            logger.info(f"Recording to {output_file}")
-    
-    def _run_loop(self) -> None:
-        """Main visualization loop (runs in separate thread)."""
-        try:
-            while self.running:
-                self._render_frame()
-                time.sleep(self.config.update_interval_ms / 1000.0)
-        except Exception as e:
-            logger.error(f"Error in visualizer loop: {e}", exc_info=True)
-        finally:
-            if self.fig:
-                plt.close(self.fig)
+        # Render initial frame
+        self._render_frame()
     
     def _render_frame(self) -> None:
         """Render a single frame of the visualization."""
@@ -192,11 +185,24 @@ class GraphVisualizer:
             linewidths=2
         )
         
-        # Draw labels
+        # Draw node IDs
         nx.draw_networkx_labels(
             nx_graph, self.pos, ax=self.ax,
             font_size=8,
             font_weight='bold'
+        )
+        
+        # Add edge labels with queue/delay metrics
+        edge_labels = {}
+        for edge_key, edge in self.graph.edges.items():
+            from_node, to_node = edge_key
+            label = f"Q:{edge.current_queue:.0f}\nD:{edge.current_delay:.1f}s"
+            edge_labels[(from_node, to_node)] = label
+        
+        nx.draw_networkx_edge_labels(
+            nx_graph, self.pos, edge_labels, ax=self.ax,
+            font_size=6,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8)
         )
         
         # Add legend
@@ -209,35 +215,18 @@ class GraphVisualizer:
         plt.tight_layout()
         
         # Update display
-        if plt.fignum_exists(self.fig.number):
+        if self.running and plt.fignum_exists(self.fig.number):
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
+            plt.pause(0.001)  # Allow GUI events to process
         
         self._frame_count += 1
-        
-        if self.record and self.writer:
-            self._record_frame()
-    
-    def _record_frame(self) -> None:
-        """Record current frame to video."""
-        if self.writer and self.fig:
-            try:
-                self.writer.grab_frame()
-            except Exception as e:
-                logger.warning(f"Failed to record frame: {e}")
     
     def _finalize_recording(self) -> None:
-        """Finalize and save video recording."""
-        if self.writer:
-            try:
-                self.writer.finish()
-                logger.info(f"Video recording finalized with {self._frame_count} frames")
-            except Exception as e:
-                logger.error(f"Failed to finalize recording: {e}")
-        elif self._frame_count > 0:
-            logger.warning("Writer not initialized but frames were counted")
-        else:
-            logger.warning("No frames recorded")
+        """Placeholder for future video recording functionality."""
+        # Video recording temporarily disabled due to threading issues
+        # Will be reimplemented with alternative approach
+        pass
     
     def _get_node_color(self, node) -> str:
         """Get color for node based on state."""

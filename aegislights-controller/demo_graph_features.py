@@ -83,30 +83,32 @@ def demo_export():
 
 
 def demo_visualizer():
-    """Demonstrate graph visualizer."""
+    """Demonstrate graph visualizer with live metrics on nodes and edges."""
     print("\n" + "=" * 60)
     print("Graph Visualizer Demo")
     print("=" * 60)
-    print("\n⚠️  Note: This demo creates a matplotlib window.")
-    print("   The window will auto-close after 10 seconds.")
-    print("   Close it manually to exit early.\n")
+    print("\n📊 This demo shows:")
+    print("   • Color-coded nodes (green=normal, orange=congested, red=spillback)")
+    print("   • Color-coded edges (gray=normal, orange=high cost, red=incident)")
+    print("   • Edge widths represent queue lengths")
+    print("   • Real-time metrics updates\n")
+    print("⚠️  The visualization window will update in real-time.")
+    print("   Close the window when done viewing.\n")
     
     # Create demo graph
     graph = create_demo_graph()
     
-    # Create visualizer
+    # Create and start visualizer
     viz = GraphVisualizer(graph, record=False)
     print("✓ Initializing visualizer...")
-    
-    # Start visualizer
     viz.start()
-    print("✓ Visualizer started")
+    print("✓ Visualizer window opened\n")
     
-    # Simulate some updates
-    print("\n🔄 Simulating traffic changes...")
+    # Simulate traffic updates
+    print("🔄 Simulating 5 traffic cycles...")
+    print("   (Each cycle updates every 1.5 seconds)\n")
+    
     for cycle in range(1, 6):
-        time.sleep(2)
-        
         # Update metrics
         viz.update_metrics(
             cycle=cycle,
@@ -120,14 +122,25 @@ def demo_visualizer():
             edge.current_queue = max(0, edge.current_queue + (cycle % 3 - 1) * 2)
             edge.current_delay = max(0, edge.current_delay + (cycle % 3 - 1) * 0.5)
         
-        print(f"  Cycle {cycle}: Updated metrics and traffic state")
+        # Change node states dynamically
+        if cycle == 2:
+            graph.nodes["int1"].is_congested = True
+        if cycle == 4:
+            graph.nodes["int4"].has_spillback = True
+        
+        # Refresh the visualization
+        viz.update()
+        
+        print(f"  ✓ Cycle {cycle}: Network state updated")
+        time.sleep(1.5)
     
-    print("\n⏸️  Holding visualization for 5 more seconds...")
-    time.sleep(5)
+    print("\n✅ Simulation complete!")
+    print("   Close the visualization window to continue...\n")
     
-    # Stop visualizer
+    # Keep window open until user closes it
+    viz.pause_until_closed()
     viz.stop()
-    print("✓ Visualizer stopped")
+    print("✓ Visualizer closed")
 
 
 def main():

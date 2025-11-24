@@ -161,7 +161,8 @@ class MAPELoopController:
         """
         Update bandit with rewards based on performance metrics.
         
-        Reward is calculated as negative network cost (lower cost = higher reward).
+        PRIMARY OBJECTIVE: Minimize average trip time
+        Reward is calculated as negative average trip time (lower time = higher reward).
         Additional penalties for spillbacks and incidents.
         
         Args:
@@ -172,13 +173,19 @@ class MAPELoopController:
         if not adaptations:
             return
         
-        # Calculate reward: negative network cost (we want to minimize cost)
-        network_cost = metrics.get('network_cost', 0.0)
-        reward = -network_cost
+        # PRIMARY OBJECTIVE: Minimize average trip time
+        # Reward = -avg_trip_time (we want to minimize trip time, so negative makes lower = higher reward)
+        avg_trip_time = metrics.get('avg_trip_time', 0.0)
+        reward = -avg_trip_time
         
-        # Apply penalties
-        spillback_penalty = metrics.get('total_spillbacks', 0) * 10.0
+        # Apply penalties for undesirable states
+        spillback_penalty = metrics.get('total_spillbacks', 0) * 50.0  # Heavy penalty for spillbacks
         reward -= spillback_penalty
+        
+        # Small penalty for high queue lengths (predictive measure to prevent future congestion)
+        avg_queue = metrics.get('avg_queue', 0.0)
+        queue_penalty = avg_queue * 2.0
+        reward -= queue_penalty
         
         # Update bandit for each adaptation
         for adaptation in adaptations:

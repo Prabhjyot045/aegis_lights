@@ -611,8 +611,9 @@
             const yHeight = 100;
 
             const costData = data.history.map(d => d.network_cost);
-            const delayData = data.history.map(d => d.avg_delay);
-            const tripTimeData = data.history.map(d => d.avg_trip_time || 0);
+            // Filter out zero values (early cycle noise)
+            const delayData = data.history.map(d => d.avg_delay).filter(v => v > 0);
+            const tripTimeData = data.history.map(d => d.avg_trip_time || 0).filter(v => v > 0);
 
             const xScale = d3.scaleLinear().domain([0, costData.length - 1]).range([0, xWidth]);
 
@@ -622,7 +623,8 @@
 
                 const line = d3.line()
                     .x((d, i) => xScale(i))
-                    .y(d => yScale(d));
+                    .y(d => yScale(d))
+                    .curve(d3.curveMonotoneX);  // Smooth interpolation
 
                 svgEl.append('path')
                     .datum(values)

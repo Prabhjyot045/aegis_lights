@@ -64,6 +64,10 @@ class RollbackManager:
         recent_utilities = [w['utility'] for w in self.performance_window]
         avg_recent = sum(recent_utilities) / len(recent_utilities)
         
+        # Prevent division by zero - if baseline is 0, skip degradation check
+        if self.baseline_utility == 0:
+            return False
+        
         degradation = (self.baseline_utility - avg_recent) / self.baseline_utility
         
         if degradation > self.config.performance_degradation_threshold:

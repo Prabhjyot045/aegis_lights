@@ -301,12 +301,11 @@ class GraphVisualizer:
         row = cursor.fetchone()
         metrics['incidents'] = row['incident_count'] if row else 0
         
-        # Get count of recent adaptations
+        # Get total count of adaptations (all cycles)
         cursor.execute("""
-            SELECT COUNT(*) as adaptation_count
+            SELECT COUNT(DISTINCT cycle_number) as adaptation_count
             FROM signal_configurations
-            WHERE cycle_number = ?
-        """, (metrics['cycle'],))
+        """)
         
         row = cursor.fetchone()
         metrics['adaptations'] = row['adaptation_count'] if row else 0

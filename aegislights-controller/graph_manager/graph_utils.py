@@ -69,14 +69,29 @@ def build_network_from_cityflow(cityflow_data: Dict) -> Dict:
     """
     lane_vehicle_count = cityflow_data.get('lane_vehicle_count', {})
     lane_waiting_count = cityflow_data.get('lane_waiting_vehicle_count', {})
+    lane_vehicles = cityflow_data.get('lane_vehicles', [])
     current_phases = cityflow_data.get('current_phase', {})
     current_time = cityflow_data.get('time', cityflow_data.get('current_time', 0.0))
+    accident_info = cityflow_data.get('accident', ('', 0))
+    
+    # Determine which edge has the accident
+    incident_edge = None
+    try:
+        if accident_info and isinstance(accident_info, (list, tuple)) and len(accident_info) >= 2:
+            accident_car_id = accident_info[0]
+            if accident_car_id and isinstance(accident_car_id, str) and accident_car_id.strip():  # Non-empty means there's an active accident
+                # Find which lane the accident vehicle is on
+                incident_edge = _find_edge_with_vehicle(accident_car_id, lane_vehicles)
+                if incident_edge:
+                    logger.info(f"Incident detected on edge {incident_edge} (vehicle {accident_car_id})")
+    except Exception as e:
+        logger.debug(f"Error parsing accident info: {e}")
     
     # Aggregate lane data into edges
     edge_data = _aggregate_lane_data_to_edges(lane_vehicle_count, lane_waiting_count)
     
     # Group edges by source intersection
-    intersection_edges = _group_edges_by_source(edge_data)
+    intersection_edges = _group_edges_by_source(edge_data, incident_edge)
     
     # Build IntersectionData for each node
     intersections = {}
@@ -143,12 +158,32 @@ def _aggregate_lane_data_to_edges(lane_vehicle_count: Dict[str, int],
     return edge_aggregates
 
 
-def _group_edges_by_source(edge_data: Dict[str, Dict]) -> Dict[str, List[RoadSegment]]:
+def _find_edge_with_vehicle(vehicle_id: str, lane_vehicles: List) -> Optional[str]:
+    """
+    Find which edge a vehicle is currently on.
+    
+    Args:
+        vehicle_id: The vehicle ID to search for
+        lane_vehicles: List of [lane_id, vehicle_id] pairs from CityFlow
+        
+    Returns:
+        Edge ID string (e.g., "AB") or None if not found
+    """
+    for lane_id, vid in lane_vehicles:
+        if vid == vehicle_id:
+            # Extract edge_id from lane_id (e.g., "AB_0" -> "AB")
+            edge_id = lane_id.rsplit('_', 1)[0] if '_' in lane_id else lane_id
+            return edge_id
+    return None
+
+
+def _group_edges_by_source(edge_data: Dict[str, Dict], incident_edge: Optional[str] = None) -> Dict[str, List[RoadSegment]]:
     """
     Group edges by their source intersection.
     
     Args:
         edge_data: Dict of edge_id -> aggregated metrics
+        incident_edge: Edge ID where incident is active (if any)
         
     Returns:
         Dict of intersection_id -> List[RoadSegment]
@@ -172,6 +207,9 @@ def _group_edges_by_source(edge_data: Dict[str, Dict]) -> Dict[str, List[RoadSeg
         free_flow_time = 30.0
         length = 300.0  # Default length in meters
         
+        # Check if this edge has an incident
+        has_incident = (edge_id == incident_edge)
+        
         road_segment = RoadSegment(
             edge_id=edge_id,
             from_intersection=from_int,
@@ -181,7 +219,7 @@ def _group_edges_by_source(edge_data: Dict[str, Dict]) -> Dict[str, List[RoadSeg
             current_queue=float(metrics['total_vehicles']),
             current_delay=estimated_delay,
             spillback_active=False,  # CityFlow doesn't provide this directly
-            incident_active=False,   # CityFlow doesn't provide this directly
+            incident_active=has_incident,  # Set based on accident detection
             current_flow=0.0,        # Would need historical data
             length=length
         )

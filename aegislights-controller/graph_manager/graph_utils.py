@@ -6,8 +6,189 @@ import networkx as nx
 import numpy as np
 
 from .graph_model import TrafficGraph, GraphEdge, GraphNode
+from api.data_schemas import IntersectionData, RoadSegment
 
 logger = logging.getLogger(__name__)
+
+
+# CityFlow network topology constants
+SIGNALIZED_INTERSECTIONS = ['A', 'B', 'C', 'D', 'E']
+VIRTUAL_NODES = ['1', '2', '3', '4', '5', '6', '7', '8']
+
+# CityFlow edge definitions (28 total: 12 signalized + 16 virtual)
+CITYFLOW_EDGES = {
+    # Signalized to signalized (12 edges)
+    'AB': ('A', 'B'), 'BA': ('B', 'A'),
+    'AC': ('A', 'C'), 'CA': ('C', 'A'),
+    'BC': ('B', 'C'), 'CB': ('C', 'B'),
+    'BD': ('B', 'D'), 'DB': ('D', 'B'),
+    'CE': ('C', 'E'), 'EC': ('E', 'C'),
+    'DE': ('D', 'E'), 'ED': ('E', 'D'),
+    # Virtual edges (16 edges: 2 per virtual node)
+    'A1': ('A', '1'), '1A': ('1', 'A'),
+    'A2': ('A', '2'), '2A': ('2', 'A'),
+    'B3': ('B', '3'), '3B': ('3', 'B'),
+    'B4': ('B', '4'), '4B': ('4', 'B'),
+    'C5': ('C', '5'), '5C': ('5', 'C'),
+    'C6': ('C', '6'), '6C': ('6', 'C'),
+    'D7': ('D', '7'), '7D': ('7', 'D'),
+    'E8': ('E', '8'), '8E': ('8', 'E'),
+}
+
+
+def build_network_from_cityflow(cityflow_data: Dict) -> Dict:
+    """
+    Transform CityFlow raw snapshot into NetworkSnapshot format.
+    
+    CityFlow provides lane-level data (e.g., AB_0, AB_1). This function:
+    1. Aggregates lane data into edge-level metrics
+    2. Groups edges by source intersection
+    3. Identifies virtual vs signalized nodes
+    4. Creates IntersectionData for each node
+    
+    CityFlow format:
+    {
+        "time": 123.5,
+        "vehicles_count": 150,
+        "lane_vehicle_count": {"AB_0": 5, "AB_1": 3, ...},
+        "lane_waiting_vehicle_count": {"AB_0": 2, "AB_1": 1, ...},
+        "lane_vehicles": [[lane_id, vehicle_id], ...],
+        "current_time": 123.5,
+        "current_phase": {"A": 0, "B": 2, ...},
+        "accident": ["", 0]
+    }
+    
+    Args:
+        cityflow_data: Raw data from CityFlow API
+        
+    Returns:
+        Dict with:
+            - intersections: Dict[str, IntersectionData]
+            - cycle_number: int (derived from time)
+            - timestamp: float
+    """
+    lane_vehicle_count = cityflow_data.get('lane_vehicle_count', {})
+    lane_waiting_count = cityflow_data.get('lane_waiting_vehicle_count', {})
+    current_phases = cityflow_data.get('current_phase', {})
+    current_time = cityflow_data.get('time', cityflow_data.get('current_time', 0.0))
+    
+    # Aggregate lane data into edges
+    edge_data = _aggregate_lane_data_to_edges(lane_vehicle_count, lane_waiting_count)
+    
+    # Group edges by source intersection
+    intersection_edges = _group_edges_by_source(edge_data)
+    
+    # Build IntersectionData for each node
+    intersections = {}
+    
+    for node_id in SIGNALIZED_INTERSECTIONS + VIRTUAL_NODES:
+        outgoing_edges = intersection_edges.get(node_id, [])
+        is_virtual = node_id in VIRTUAL_NODES
+        current_phase = current_phases.get(node_id) if not is_virtual else None
+        
+        intersections[node_id] = IntersectionData(
+            intersection_id=node_id,
+            is_virtual=is_virtual,
+            outgoing_roads=outgoing_edges,
+            current_phase=current_phase,
+            timestamp=current_time
+        )
+    
+    # Derive cycle number from time (assuming 60s cycles)
+    cycle_number = int(current_time / 60.0)
+    
+    logger.debug(f"Transformed CityFlow data: {len(intersections)} nodes, "
+                f"{sum(len(i.outgoing_roads) for i in intersections.values())} edges")
+    
+    return {
+        'intersections': intersections,
+        'cycle_number': cycle_number,
+        'timestamp': current_time
+    }
+
+
+def _aggregate_lane_data_to_edges(lane_vehicle_count: Dict[str, int],
+                                  lane_waiting_count: Dict[str, int]) -> Dict[str, Dict]:
+    """
+    Aggregate lane-level data into edge-level metrics.
+    
+    CityFlow lanes are named like "AB_0", "AB_1". We sum them into "AB".
+    
+    Args:
+        lane_vehicle_count: Dict of lane_id -> vehicle count
+        lane_waiting_count: Dict of lane_id -> waiting vehicle count
+        
+    Returns:
+        Dict of edge_id -> {queue, waiting, delay, ...}
+    """
+    edge_aggregates = {}
+    
+    for lane_id, vehicle_count in lane_vehicle_count.items():
+        # Extract edge_id from lane_id (e.g., "AB_0" -> "AB")
+        edge_id = lane_id.rsplit('_', 1)[0] if '_' in lane_id else lane_id
+        
+        waiting_count = lane_waiting_count.get(lane_id, 0)
+        
+        if edge_id not in edge_aggregates:
+            edge_aggregates[edge_id] = {
+                'total_vehicles': 0,
+                'total_waiting': 0,
+                'lane_count': 0
+            }
+        
+        edge_aggregates[edge_id]['total_vehicles'] += vehicle_count
+        edge_aggregates[edge_id]['total_waiting'] += waiting_count
+        edge_aggregates[edge_id]['lane_count'] += 1
+    
+    return edge_aggregates
+
+
+def _group_edges_by_source(edge_data: Dict[str, Dict]) -> Dict[str, List[RoadSegment]]:
+    """
+    Group edges by their source intersection.
+    
+    Args:
+        edge_data: Dict of edge_id -> aggregated metrics
+        
+    Returns:
+        Dict of intersection_id -> List[RoadSegment]
+    """
+    intersection_edges = {node: [] for node in SIGNALIZED_INTERSECTIONS + VIRTUAL_NODES}
+    
+    for edge_id, metrics in edge_data.items():
+        if edge_id not in CITYFLOW_EDGES:
+            logger.warning(f"Unknown edge_id in CityFlow data: {edge_id}")
+            continue
+        
+        from_int, to_int = CITYFLOW_EDGES[edge_id]
+        
+        # Estimate delay based on waiting vehicles (simplified)
+        # Assume each waiting vehicle adds ~2s delay
+        avg_waiting = metrics['total_waiting'] / max(metrics['lane_count'], 1)
+        estimated_delay = avg_waiting * 2.0
+        
+        # Default capacity and free_flow_time (should be from config)
+        capacity = 100.0
+        free_flow_time = 30.0
+        length = 300.0  # Default length in meters
+        
+        road_segment = RoadSegment(
+            edge_id=edge_id,
+            from_intersection=from_int,
+            to_intersection=to_int,
+            capacity=capacity,
+            free_flow_time=free_flow_time,
+            current_queue=float(metrics['total_vehicles']),
+            current_delay=estimated_delay,
+            spillback_active=False,  # CityFlow doesn't provide this directly
+            incident_active=False,   # CityFlow doesn't provide this directly
+            current_flow=0.0,        # Would need historical data
+            length=length
+        )
+        
+        intersection_edges[from_int].append(road_segment)
+    
+    return intersection_edges
 
 
 def compute_edge_costs(graph: TrafficGraph, 

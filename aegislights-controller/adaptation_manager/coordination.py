@@ -59,25 +59,44 @@ class CoordinationPlanner:
         
         return adaptations
     
-    def _identify_coordination_groups(self, bypasses: List) -> List[List[str]]:
+    def _identify_coordination_groups(self, bypasses: List[Dict]) -> List[List[str]]:
         """
         Identify groups of intersections that should be coordinated.
         
+        Extracts intersection sequences from bypass route paths.
+        
         Args:
-            bypasses: List of bypass routes
+            bypasses: List of bypass route dictionaries with 'path' field
             
         Returns:
             List of coordination groups (lists of intersection IDs)
         """
-        # Each bypass route is a potential coordination group
-        # We want to coordinate signals along these routes for green waves
         groups = []
         
         for bypass in bypasses:
-            if len(bypass) >= 2:
-                # Only coordinate if there are at least 2 intersections
-                groups.append(bypass)
-                logger.debug(f"Created coordination group: {bypass}")
+            # Extract unique intersections from the bypass path
+            path = bypass.get('path', [])
+            if not path:
+                continue
+            
+            # Get unique intersections in order (from edge tuples)
+            intersections = []
+            seen = set()
+            for edge_tuple in path:
+                from_int = edge_tuple[0]
+                to_int = edge_tuple[1]
+                if from_int not in seen:
+                    intersections.append(from_int)
+                    seen.add(from_int)
+                if to_int not in seen:
+                    intersections.append(to_int)
+                    seen.add(to_int)
+            
+            # Only create group if at least 2 signalized intersections
+            signalized = [i for i in intersections if i in {'A', 'B', 'C', 'D', 'E'}]
+            if len(signalized) >= 2:
+                groups.append(signalized)
+                logger.debug(f"Created coordination group: {signalized}")
         
         return groups
     
@@ -116,28 +135,26 @@ class CoordinationPlanner:
                 next_intersection = group[i + 1]
                 
                 # Get travel time to next intersection
-                # Look for edge in graph between these intersections
-                edge_key = (intersection_id, next_intersection)
+                edge = self.graph.get_edge(intersection_id, next_intersection)
                 
-                if edge_key in self.graph.edges:
-                    edge_data = self.graph.edges[edge_key]
-                    # Travel time = distance / speed
-                    # Assuming edge has 'length' in meters and 'speed_limit' in m/s
-                    travel_time = edge_data.get('travel_time', 0.0)
+                if edge:
+                    # Use free flow time as basis for offset
+                    # This creates green wave: signal turns green when platoon arrives
+                    travel_time = edge.free_flow_time
                     
-                    # If travel_time not stored, calculate it
-                    if travel_time == 0.0:
-                        length = edge_data.get('length', 100.0)  # Default 100m
-                        speed = edge_data.get('speed_limit', 13.89)  # Default 50 km/h = 13.89 m/s
-                        travel_time = length / speed if speed > 0 else 0.0
+                    # Adjust for current delay (conservative: add some buffer)
+                    if edge.current_delay > 0:
+                        travel_time += edge.current_delay * 0.3  # Add 30% of delay as buffer
                     
                     # Accumulate offset (time in seconds)
                     cumulative_offset += travel_time
-                    logger.debug(f"Offset for {intersection_id}: {adaptation['offset']:.2f}s, travel time to next: {travel_time:.2f}s")
+                    logger.debug(f"Offset for {intersection_id}: {adaptation['offset']:.2f}s, "
+                               f"travel time to next: {travel_time:.2f}s")
                 else:
-                    logger.debug(f"No edge found between {intersection_id} and {next_intersection}, using default offset")
+                    logger.debug(f"No edge found between {intersection_id} and {next_intersection}, "
+                               f"using default offset")
                     # Use a default offset if no edge exists
-                    cumulative_offset += 30.0  # Default 30 seconds
+                    cumulative_offset += 20.0  # Default 20 seconds
             else:
                 # Last intersection in group
                 logger.debug(f"Offset for {intersection_id}: {adaptation['offset']:.2f}s (last in group)")

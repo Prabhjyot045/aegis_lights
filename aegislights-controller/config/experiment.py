@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 
 
 @dataclass
@@ -10,30 +11,32 @@ class ExperimentConfig:
     
     # Experiment identification
     name: str = "aegis_experiment_001"
-    description: str = "AegisLights self-adaptive traffic control experiment"
+    description: str = "AegisLights self-adaptive traffic control with CityFlow"
     
-    # Duration
-    duration_seconds: int = 3600  # 1 hour simulation
+    # NOTE: Controller runs continuously, adapting every cycle_period_seconds
+    # until it cannot connect to the simulator or max_duration is reached.
+    # The actual network topology, traffic conditions, and incident scenarios
+    # are all determined by the CityFlow simulator configuration.
     
-    # Random seed for reproducibility
-    random_seed: int = 42
+    # Duration (maximum runtime, or None for indefinite)
+    max_duration_seconds: int = None  # Run indefinitely until simulator stops or Ctrl+C
     
-    # Database
-    db_path: str = "data/aegis_lights.db"
-    cleanup_on_exit: bool = False  # Set True to reset DB after experiment
+    # Database (absolute path relative to aegislights-controller/)
+    db_path: str = None
+    cleanup_on_exit: bool = False  # Set True to reset DB after run
     
-    # Output
+    # Output and logging
     output_dir: Path = Path("output/experiments")
-    record_visualization: bool = True
-    
-    # Scenario
-    scenario_type: str = "rush_hour"  # Options: rush_hour, incident, mixed
-    num_intersections: int = 4  # Start with 4, scale to 16
-    
-    # Demand levels
-    demand_level: str = "medium"  # Options: light, medium, heavy, extreme
+    record_visualization: bool = False  # Set True to record matplotlib video
+    enable_web_visualizer: bool = True  # Web-based real-time visualization
     
     def __post_init__(self):
-        """Ensure output directory exists."""
+        """Ensure output directory exists and set absolute database path."""
+        # Set absolute path for database relative to aegislights-controller/
+        if self.db_path is None:
+            controller_dir = Path(__file__).parent.parent.absolute()
+            self.db_path = str(controller_dir / "data" / "aegis_lights.db")
+        
+        # Ensure output directory exists
         self.output_dir = Path(self.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)

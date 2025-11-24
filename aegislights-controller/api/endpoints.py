@@ -33,33 +33,19 @@ class SimulatorAPI:
     
     def get_network_snapshot(self) -> Optional[NetworkSnapshot]:
         """
-        Get complete network state snapshot with intersection-based structure.
+        Get complete network state snapshot from CityFlow simulator.
         
-        Expected simulator response format:
+        CityFlow returns raw vehicle/lane data. This method transforms it into
+        the NetworkSnapshot format expected by the controller.
+        
+        CityFlow response format:
         {
-            "intersections": {
-                "int_1": {
-                    "intersection_id": "int_1",
-                    "outgoing_roads": [
-                        {
-                            "to_intersection": "int_2",
-                            "capacity": 1.5,
-                            "free_flow_time": 30.0,
-                            "current_queue": 10,
-                            "spillback_active": false,
-                            "incident_active": false,
-                            "current_delay": 5.5,
-                            "current_flow": 0.8
-                        },
-                        ...
-                    ],
-                    "signal_state": "NS_GREEN",
-                    "timestamp": 1234567890.0
-                },
-                ...
-            },
-            "cycle_number": 1,
-            "timestamp": 1234567890.0
+            "time": 123.5,
+            "vehicles_count": 150,
+            "running_vehicles": [...],
+            "lane_vehicle_count": {"AB_0": 5, "AB_1": 3, ...},
+            "lane_waiting_vehicle_count": {"AB_0": 2, "AB_1": 1, ...},
+            "accident": ["", 0]
         }
         
         Returns:
@@ -68,138 +54,113 @@ class SimulatorAPI:
         response = self.client.get(self.config.endpoint_get_network)
         
         if not response:
-            logger.error("Failed to get network snapshot")
+            logger.error("Failed to get network snapshot from CityFlow")
             return None
         
         try:
-            snapshot = NetworkSnapshot(**response)
-            logger.info(f"Retrieved network snapshot with {len(snapshot.intersections)} intersections")
+            # Transform CityFlow response to NetworkSnapshot
+            snapshot = self._transform_cityflow_snapshot(response)
+            if snapshot:
+                logger.info(f"Retrieved network snapshot with {len(snapshot.intersections)} nodes")
             return snapshot
         except Exception as e:
-            logger.error(f"Failed to parse network snapshot: {e}")
+            logger.error(f"Failed to parse CityFlow snapshot: {e}")
             return None
     
-    def get_all_edges(self) -> List[EdgeData]:
+    def _transform_cityflow_snapshot(self, cityflow_data: Dict) -> Optional[NetworkSnapshot]:
         """
-        [LEGACY] Get traffic data for all edges.
-        Use get_network_snapshot() for new code with intersection-based structure.
-        
-        Returns:
-            List of EdgeData objects
-        """
-        response = self.client.get(self.config.endpoint_get_edges)
-        
-        if not response:
-            logger.error("Failed to get edge data")
-            return []
-        
-        edges = []
-        for edge_dict in response.get('edges', []):
-            try:
-                edges.append(EdgeData(**edge_dict))
-            except Exception as e:
-                logger.warning(f"Failed to parse edge data: {e}")
-        
-        return edges
-    
-    def get_edge(self, edge_id: str) -> Optional[EdgeData]:
-        """
-        Get traffic data for a specific edge.
+        Transform CityFlow raw data into NetworkSnapshot format.
         
         Args:
-            edge_id: Edge identifier
+            cityflow_data: Raw data from CityFlow /api/v1/snapshots/latest
             
         Returns:
-            EdgeData object or None
+            NetworkSnapshot object or None
         """
-        response = self.client.get(
-            self.config.endpoint_get_edge,
-            edge_id=edge_id
-        )
-        
-        if not response:
-            return None
+        from graph_manager.graph_utils import build_network_from_cityflow
         
         try:
-            return EdgeData(**response)
+            # Use graph utilities to transform the data
+            # This will aggregate lane data into edge-level metrics
+            network_data = build_network_from_cityflow(cityflow_data)
+            
+            # Create NetworkSnapshot from transformed data
+            snapshot = NetworkSnapshot(
+                intersections=network_data['intersections'],
+                cycle_number=network_data.get('cycle_number', 0),
+                timestamp=cityflow_data.get('time', time.time()),
+                average_travel_time=cityflow_data.get('average_travel_time')
+            )
+            
+            return snapshot
+            
         except Exception as e:
-            logger.warning(f"Failed to parse edge data for {edge_id}: {e}")
+            logger.error(f"Failed to transform CityFlow data: {e}")
             return None
     
-    def update_signal_timing(self, intersection_id: str, plan_id: str, 
-                           offset: float = 0.0) -> bool:
+    def update_signal_timing(self, intersection_id: str, phase_id: int, 
+                           plan_id: Optional[str] = None) -> bool:
         """
-        Update signal timing for an intersection with a specific plan.
+        Update signal timing for an intersection (apply phase to CityFlow).
         
         Args:
-            intersection_id: Intersection identifier
-            plan_id: Signal plan identifier
-            offset: Signal offset in seconds
+            intersection_id: Intersection identifier (A, B, C, D, E)
+            phase_id: Phase index (0-3)
+            plan_id: Optional plan ID for tracking purposes
             
         Returns:
             True if successful, False otherwise
         """
         config = SignalConfiguration(
             intersection_id=intersection_id,
-            plan_id=plan_id,
-            offset=offset
+            phase_id=phase_id,
+            plan_id=plan_id
         )
         return self.set_signal_timing(config)
     
     def set_signal_timing(self, config: SignalConfiguration) -> bool:
         """
-        Set signal timing for an intersection.
+        Set signal phase for an intersection in CityFlow.
         
         Args:
-            config: Signal configuration
+            config: Signal configuration with intersection_id and phase_id
             
         Returns:
             True if successful, False otherwise
         """
+        # CityFlow expects: POST /api/v1/intersections/{id}/plan with {"phase_id": 0}
         response = self.client.post(
             self.config.endpoint_set_signal,
-            data=config.model_dump(),
+            data={"phase_id": config.phase_id},
             intersection_id=config.intersection_id
         )
         
         if response and response.get('success'):
-            logger.info(f"Signal timing applied for {config.intersection_id}")
+            logger.info(f"Phase {config.phase_id} applied to intersection {config.intersection_id}")
             return True
         else:
-            logger.error(f"Failed to apply signal timing for {config.intersection_id}")
+            logger.error(f"Failed to apply phase {config.phase_id} to {config.intersection_id}")
             return False
     
-    def inject_incident(self, incident: IncidentEvent) -> bool:
+    def get_travel_times(self) -> Optional[Dict]:
         """
-        Inject an incident into the simulation.
+        Get average travel times from CityFlow.
         
-        Args:
-            incident: Incident event details
-            
         Returns:
-            True if successful, False otherwise
+            Dict with travel time data or None
         """
-        response = self.client.post(
-            self.config.endpoint_inject_incident,
-            data=incident.model_dump()
-        )
-        
-        if response and response.get('success'):
-            logger.info(f"Incident injected on {incident.edge_id}")
-            return True
-        else:
-            logger.error(f"Failed to inject incident on {incident.edge_id}")
-            return False
+        response = self.client.get(self.config.endpoint_get_travel_time)
+        return response if response else None
     
-    def get_metrics(self) -> Optional[Dict]:
+    def get_file_paths(self) -> Optional[Dict]:
         """
-        Get current simulation metrics.
+        Get configuration file paths from CityFlow.
         
         Returns:
-            Dict of metrics or None
+            Dict with paths to roadnet, flow, replay files or None
         """
-        response = self.client.get(self.config.endpoint_get_metrics)
-        return response.get('metrics') if response else None
+        response = self.client.get(self.config.endpoint_get_file_paths)
+        return response if response else None
     
     def check_connection(self) -> bool:
         """

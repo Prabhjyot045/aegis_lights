@@ -64,6 +64,11 @@ class IncidentHandler:
         Select plan for incident mode.
         Prioritizes clearing affected areas and routing around incidents.
         
+        For CityFlow:
+        - If on bypass route: Select plan that favors bypass direction
+        - If has incident: Select balanced plan to clear queues
+        - Otherwise: Use default plan selection
+        
         Args:
             intersection_id: Intersection identifier
             context: Context features
@@ -71,7 +76,7 @@ class IncidentHandler:
             analysis_result: Analysis results with bypass routes
             
         Returns:
-            Selected plan
+            Selected plan dictionary
         """
         logger.debug(f"Selecting incident plan for {intersection_id}")
         
@@ -79,34 +84,59 @@ class IncidentHandler:
             return {}
         
         # Check if this intersection is on a bypass route
-        bypass_routes = analysis_result.get('bypass_routes', [])
-        is_on_bypass = any(
-            intersection_id in route for route in bypass_routes
-        )
+        bypasses = analysis_result.get('bypasses', [])
+        is_on_bypass = False
+        bypass_direction = None
         
-        # Check if incident affects this intersection
+        for bypass in bypasses:
+            path = bypass.get('path', [])
+            for edge_tuple in path:
+                if edge_tuple[0] == intersection_id:
+                    is_on_bypass = True
+                    # Determine which direction the bypass favors
+                    to_int = edge_tuple[1]
+                    if to_int in {'A', 'C', 'E'}:  # Vertical
+                        bypass_direction = 'ns'
+                    else:  # Horizontal
+                        bypass_direction = 'ew'
+                    break
+            if is_on_bypass:
+                break
+        
+        # Check if incident affects this intersection's outgoing edges
         incidents = analysis_result.get('incidents', [])
         has_nearby_incident = any(
-            incident.get('intersection_id') == intersection_id or
-            intersection_id in incident.get('affected_intersections', [])
+            incident.get('from') == intersection_id
             for incident in incidents
         )
         
-        # Strategy: If on bypass route, prefer longer green times
-        # If near incident, prefer clearing queues quickly
-        if is_on_bypass:
-            # Select plan with longer cycle to accommodate more flow
-            best_plan = max(valid_plans, key=lambda p: p.get('cycle_length', 90))
-            logger.debug(f"Selected bypass-optimized plan for {intersection_id}")
-            return best_plan
-        elif has_nearby_incident:
-            # Select plan with shorter cycle for more responsive clearing
-            best_plan = min(valid_plans, key=lambda p: p.get('cycle_length', 90))
-            logger.debug(f"Selected incident-clearing plan for {intersection_id}")
-            return best_plan
-        else:
-            # Use first available plan as default
-            return valid_plans[0]
+        # Strategy: Select plan based on situation
+        if is_on_bypass and bypass_direction:
+            # Favor the bypass direction
+            if bypass_direction == 'ns':
+                # Prefer NS priority plans
+                for plan in valid_plans:
+                    if 'ns_priority' in plan.get('plan_id', '').lower():
+                        logger.info(f"Selected NS-priority plan for bypass at {intersection_id}")
+                        return plan
+            else:
+                # Prefer EW priority plans
+                for plan in valid_plans:
+                    if 'ew_priority' in plan.get('plan_id', '').lower():
+                        logger.info(f"Selected EW-priority plan for bypass at {intersection_id}")
+                        return plan
+        
+        if has_nearby_incident:
+            # Use balanced plan to distribute load
+            for plan in valid_plans:
+                if 'balanced' in plan.get('plan_id', '').lower():
+                    logger.info(f"Selected balanced plan for incident at {intersection_id}")
+                    return plan
+        
+        # Fallback: select first available plan
+        best_plan = valid_plans[0]
+        logger.debug(f"Selected default plan for {intersection_id}")
+        return best_plan
     
     def get_affected_edges(self, incident: Dict) -> List[str]:
         """Get edges affected by an incident."""

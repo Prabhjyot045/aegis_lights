@@ -99,7 +99,7 @@ class SimulatorClient:
     
     def check_connection(self) -> bool:
         """
-        Check if simulator is reachable.
+        Check if CityFlow simulator is reachable.
         
         Returns:
             True if connected, False otherwise
@@ -109,8 +109,14 @@ class SimulatorClient:
                 f"{self.config.base_url}/health",
                 timeout=5.0
             )
-            return response.status_code == 200
-        except requests.exceptions.RequestException:
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'ok' and data.get('service') == 'cityflow':
+                    logger.info("Successfully connected to CityFlow simulator")
+                    return True
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"CityFlow connection check failed: {e}")
             return False
     
     def close(self) -> None:

@@ -99,10 +99,38 @@ class Executor:
         }
     
     def _validate_adaptations(self, adaptations: List[Dict]) -> bool:
-        """Validate all adaptations meet safety constraints."""
+        """
+        Validate all adaptations meet safety constraints.
+        
+        Checks:
+        - Valid intersection IDs (signalized only)
+        - Valid phase_id (0-3 for CityFlow)
+        - Valid offsets (non-negative)
+        - Plan exists in phase library
+        
+        Args:
+            adaptations: List of adaptation dicts
+            
+        Returns:
+            True if all valid, False otherwise
+        """
+        signalized_intersections = {'A', 'B', 'C', 'D', 'E'}
+        
         for adaptation in adaptations:
-            intersection_id = adaptation['intersection_id']
-            plan_id = adaptation['plan_id']
+            intersection_id = adaptation.get('intersection_id')
+            plan_id = adaptation.get('plan_id')
+            phase_id = adaptation.get('phase_id', 0)
+            offset = adaptation.get('offset', 0.0)
+            
+            # Validate intersection is signalized
+            if intersection_id not in signalized_intersections:
+                logger.warning(f"Invalid intersection {intersection_id} (not signalized)")
+                return False
+            
+            # Validate phase_id is in valid range for CityFlow
+            if not isinstance(phase_id, int) or phase_id < 0 or phase_id > 3:
+                logger.warning(f"Invalid phase_id {phase_id} for {intersection_id} (must be 0-3)")
+                return False
             
             # Validate plan exists and is safe
             if not self.safety_validator.validate_plan(intersection_id, plan_id):
@@ -110,7 +138,6 @@ class Executor:
                 return False
             
             # Validate offset is reasonable
-            offset = adaptation.get('offset', 0.0)
             if offset < 0 or offset > 300:  # Max 5 minutes offset
                 logger.warning(f"Invalid offset {offset} for {intersection_id}")
                 return False
@@ -120,21 +147,37 @@ class Executor:
     
     def _apply_adaptations(self, adaptations: List[Dict], cycle: int,
                           timestamp: float) -> List[Dict]:
-        """Apply validated adaptations to simulator."""
-        logger.debug(f"Applying {len(adaptations)} adaptations at cycle {cycle}")
+        """
+        Apply validated adaptations to simulator.
+        
+        For CityFlow: Sends phase_id (0-3) to each intersection.
+        Also stores configuration in database for tracking.
+        
+        Args:
+            adaptations: List of adaptation dicts with phase_id
+            cycle: Current cycle number
+            timestamp: Current timestamp
+            
+        Returns:
+            List of successfully applied adaptations
+        """
+        logger.info(f"[Execute] Applying {len(adaptations)} adaptations at cycle {cycle}")
         applied = []
         
         for adaptation in adaptations:
             intersection_id = adaptation['intersection_id']
             plan_id = adaptation['plan_id']
+            phase_id = adaptation.get('phase_id', 0)  # CityFlow phase index
             offset = adaptation.get('offset', 0.0)
+            cycle_length = adaptation.get('cycle_length', 80)
+            is_incident_mode = adaptation.get('is_incident_mode', False)
             
             try:
-                # Update signal timing via API
+                # Update signal timing via API (sends phase_id to CityFlow)
                 success = self.api.update_signal_timing(
                     intersection_id=intersection_id,
-                    plan_id=plan_id,
-                    offset=offset
+                    phase_id=phase_id,
+                    plan_id=plan_id
                 )
                 
                 if success:
@@ -143,66 +186,99 @@ class Executor:
                     if node:
                         node.current_plan_id = plan_id
                         node.offset = offset
+                        node.cycle_length = cycle_length
+                    
+                    # Store configuration in database
+                    self.knowledge.store_signal_config(
+                        intersection_id=intersection_id,
+                        cycle=cycle,
+                        timestamp=timestamp,
+                        plan_id=plan_id,
+                        phase_id=phase_id,
+                        cycle_length=cycle_length,
+                        offset=offset,
+                        is_incident_mode=is_incident_mode
+                    )
                     
                     applied.append({
                         'intersection_id': intersection_id,
                         'plan_id': plan_id,
+                        'phase_id': phase_id,
                         'offset': offset,
                         'cycle': cycle,
-                        'timestamp': timestamp
+                        'timestamp': timestamp,
+                        'is_incident_mode': is_incident_mode
                     })
-                    logger.debug(f"Applied {plan_id} to {intersection_id}")
+                    
+                    logger.info(f"Applied phase {phase_id} (plan {plan_id}) to {intersection_id}")
                 else:
-                    logger.warning(f"Failed to apply {plan_id} to {intersection_id}")
+                    logger.warning(f"Failed to apply phase {phase_id} to {intersection_id}")
                     
             except Exception as e:
-                logger.error(f"Error applying adaptation to {intersection_id}: {e}")
+                logger.error(f"Error applying adaptation to {intersection_id}: {e}", exc_info=True)
         
+        logger.info(f"[Execute] Successfully applied {len(applied)}/{len(adaptations)} adaptations")
         return applied
     
     def _execute_rollback(self, cycle: int) -> bool:
-        """Rollback to last-known-good configuration."""
-        logger.info("Executing rollback to last-known-good configuration")
+        """
+        Rollback to last-known-good configuration.
+        
+        Restores previous signal phases that were performing well.
+        
+        Args:
+            cycle: Current cycle number
+            
+        Returns:
+            True if rollback successful, False otherwise
+        """
+        logger.warning("[Execute] Executing rollback to last-known-good configuration")
         
         try:
-            # Get last-known-good configuration for all intersections
+            # Get last-known-good configuration for all signalized intersections
             lkg_configs = []
             timestamp = time.time()
+            signalized_intersections = {'A', 'B', 'C', 'D', 'E'}
             
-            for intersection_id in self.graph.nodes.keys():
-                lkg = self.knowledge.get_last_known_good(intersection_id)
-                if lkg:
-                    lkg_configs.append(lkg['config'])
+            for intersection_id in signalized_intersections:
+                if intersection_id in self.graph.nodes:
+                    lkg = self.knowledge.get_last_known_good(intersection_id)
+                    if lkg:
+                        lkg_configs.append(lkg['config'])
             
             if not lkg_configs:
-                logger.error("No last-known-good configuration available")
+                logger.error("No last-known-good configuration available for rollback")
                 return False
             
             # Apply last-known-good plans
+            rolled_back = 0
             for adaptation in lkg_configs:
                 intersection_id = adaptation['intersection_id']
                 plan_id = adaptation['plan_id']
+                phase_id = adaptation.get('phase_id', 0)
                 offset = adaptation.get('offset', 0.0)
                 
-                self.api.update_signal_timing(
+                success = self.api.update_signal_timing(
                     intersection_id=intersection_id,
-                    plan_id=plan_id,
-                    offset=offset
+                    phase_id=phase_id,
+                    plan_id=plan_id
                 )
                 
-                # Update graph model
-                node = self.graph.nodes.get(intersection_id)
-                if node:
-                    node.current_plan_id = plan_id
-                    node.offset = offset
+                if success:
+                    # Update graph model
+                    node = self.graph.nodes.get(intersection_id)
+                    if node:
+                        node.current_plan_id = plan_id
+                        node.offset = offset
+                    rolled_back += 1
             
             # Log rollback event
             self.knowledge.log_rollback(cycle, timestamp, lkg_configs)
-            logger.info(f"Rollback successful: restored {len(lkg_configs)} signal plans")
-            return True
+            logger.warning(f"[Execute] Rollback successful: restored {rolled_back} signal plans")
+            return rolled_back > 0
             
         except Exception as e:
-            logger.error(f"Rollback failed: {e}")
+            logger.error(f"[Execute] Rollback failed: {e}", exc_info=True)
             return False
     
     def _log_execution(self, cycle: int, applied: List, metrics: Dict) -> None:

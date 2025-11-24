@@ -58,17 +58,35 @@ def main():
         logger.info("Initializing knowledge base...")
         knowledge = KnowledgeBase(db_path, graph)
         
-        # Initialize visualizer
-        logger.info("Starting graph visualizer...")
-        visualizer = GraphVisualizer(
-            graph=graph,
-            record=exp_config.record_visualization,
-            output_dir=exp_config.output_dir
-        )
-        visualizer.start()
+        # Initialize visualizer (choose web or matplotlib based on config)
+        logger.info("Starting visualizer...")
+        if exp_config.enable_web_visualizer:
+            from graph_manager.graph_visualizer import GraphVisualizer as WebVisualizer
+            visualizer = WebVisualizer(
+                db_path=db_path,
+                host='0.0.0.0',
+                port=5001,
+                auto_refresh=True,
+                refresh_interval=5  # 5 seconds - less distracting
+            )
+            visualizer.start()
+            logger.info("Web visualizer started at http://localhost:5001")
+        else:
+            visualizer = GraphVisualizer(
+                graph=graph,
+                record=exp_config.record_visualization,
+                output_dir=exp_config.output_dir
+            )
+            visualizer.start()
         
         # Initialize and run MAPE loop
         logger.info("Starting MAPE-K control loop...")
+        logger.info(f"Controller will adapt every {mape_config.cycle_period_seconds} seconds")
+        if exp_config.max_duration_seconds:
+            logger.info(f"Maximum duration: {exp_config.max_duration_seconds}s")
+        else:
+            logger.info("Duration: Indefinite (until simulator stops or Ctrl+C)")
+        
         loop_controller = MAPELoopController(
             knowledge=knowledge,
             graph=graph,
@@ -77,8 +95,9 @@ def main():
             sim_config=sim_config
         )
         
-        # Run the adaptation loop
-        loop_controller.run(duration=exp_config.duration_seconds)
+        # Run the adaptation loop (None means run indefinitely)
+        duration = exp_config.max_duration_seconds if exp_config.max_duration_seconds else float('inf')
+        loop_controller.run(duration=duration)
         
         logger.info("MAPE-K control loop completed successfully")
         

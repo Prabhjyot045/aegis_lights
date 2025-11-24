@@ -2,6 +2,7 @@
 
 from .init_db import initialize_database, verify_database, get_database_info
 from .cleanup_db import cleanup_database
+from .phase_library import PhaseLibrary
 from .db_utils import (
     get_connection,
     close_connection,
@@ -21,6 +22,7 @@ __all__ = [
     'verify_database',
     'get_database_info',
     'cleanup_database',
+    'PhaseLibrary',
     'get_connection',
     'close_connection',
     'insert_snapshot',

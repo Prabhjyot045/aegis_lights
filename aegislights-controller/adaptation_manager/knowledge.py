@@ -86,7 +86,7 @@ class KnowledgeBase:
                          spillback: bool, incident: bool,
                          cycle: int, timestamp: float) -> None:
         """
-        Update edge state in database using upsert.
+        Update edge state in database using upsert (legacy interface).
         
         Args:
             from_intersection: Origin intersection
@@ -127,8 +127,56 @@ class KnowledgeBase:
         )
         close_connection(conn)
     
+    def update_edge_state_by_edge_id(self, edge_id: str, from_intersection: str,
+                                    to_intersection: str, capacity: float,
+                                    free_flow_time: float, length: float,
+                                    queue: float, delay: float, flow: float,
+                                    spillback: bool, incident: bool,
+                                    cycle: int, timestamp: float) -> None:
+        """
+        Update edge state in database using edge_id (CityFlow format).
+        
+        Args:
+            edge_id: Edge identifier (e.g., 'AB', 'A1')
+            from_intersection: Origin intersection
+            to_intersection: Destination intersection
+            capacity: Road capacity
+            free_flow_time: Free flow travel time
+            length: Road length in meters
+            queue: Current queue length
+            delay: Current delay
+            flow: Current flow rate
+            spillback: Spillback active flag
+            incident: Incident active flag
+            cycle: Current cycle number
+            timestamp: Current timestamp
+        """
+        conn = get_connection(self.db_path)
+        
+        # Determine if edge connects to/from virtual nodes
+        is_virtual_source = from_intersection in ['1', '2', '3', '4', '5', '6', '7', '8']
+        is_virtual_sink = to_intersection in ['1', '2', '3', '4', '5', '6', '7', '8']
+        
+        insert_or_update_graph_edge(
+            conn, edge_id,
+            from_intersection, to_intersection,
+            capacity=capacity,
+            free_flow_time=free_flow_time,
+            length=length,
+            is_virtual_source=is_virtual_source,
+            is_virtual_sink=is_virtual_sink,
+            current_queue=queue,
+            current_delay=delay,
+            current_flow=flow,
+            spillback_active=spillback,
+            incident_active=incident,
+            cycle_number=cycle,
+            timestamp=timestamp
+        )
+        close_connection(conn)
+    
     def insert_snapshot(self, cycle: int, timestamp: float,
-                       from_intersection: str, to_intersection: str,
+                       edge_id: str, from_intersection: str, to_intersection: str,
                        queue: int, delay: float, throughput: float,
                        spillback: bool, incident: bool) -> None:
         """
@@ -137,6 +185,7 @@ class KnowledgeBase:
         Args:
             cycle: Cycle number
             timestamp: Timestamp
+            edge_id: Edge identifier (e.g., 'AB', 'A1')
             from_intersection: Origin intersection
             to_intersection: Destination intersection
             queue: Queue length
@@ -146,9 +195,42 @@ class KnowledgeBase:
             incident: Incident flag
         """
         conn = get_connection(self.db_path)
-        insert_snapshot(conn, cycle, timestamp, from_intersection, to_intersection,
+        insert_snapshot(conn, cycle, timestamp, edge_id, from_intersection, to_intersection,
                        queue, delay, throughput, spillback, incident)
         close_connection(conn)
+    
+    def store_signal_config(self, intersection_id: str, cycle: int, timestamp: float,
+                           plan_id: str, phase_id: int, cycle_length: float = 80.0,
+                           offset: float = 0.0, is_incident_mode: bool = False) -> None:
+        """
+        Store signal configuration in database.
+        
+        Records applied signal timing for tracking and rollback purposes.
+        
+        Args:
+            intersection_id: Intersection identifier
+            cycle: Cycle number
+            timestamp: Timestamp
+            plan_id: Plan identifier
+            phase_id: CityFlow phase index (0-3)
+            cycle_length: Signal cycle length in seconds
+            offset: Coordination offset in seconds
+            is_incident_mode: Whether this was applied during incident mode
+        """
+        from db_manager.db_utils import insert_signal_config
+        
+        conn = get_connection(self.db_path)
+        insert_signal_config(
+            conn, intersection_id, cycle, timestamp,
+            plan_id=plan_id,
+            phase_id=phase_id,
+            cycle_length=cycle_length,
+            offset=offset,
+            is_incident_mode=is_incident_mode
+        )
+        close_connection(conn)
+        
+        logger.debug(f"Stored signal config for {intersection_id}: plan={plan_id}, phase={phase_id}")
     
     def get_last_known_good(self, intersection_id: str) -> Optional[Dict]:
         """
@@ -341,6 +423,105 @@ class KnowledgeBase:
             logger.info(f"Logged rollback event for cycle {cycle}")
         except Exception as e:
             logger.warning(f"Could not log rollback (table may not exist): {e}")
+    
+    def store_analysis_result(self, cycle: int, timestamp: float,
+                             edge_costs: Dict[str, float],
+                             hotspots: List[str],
+                             bypass_routes: List[tuple],
+                             trends: Dict[str, str],
+                             incidents: List[str]) -> None:
+        """
+        Store analysis stage results for debugging and tracking.
+        
+        Args:
+            cycle: Current cycle number
+            timestamp: Analysis timestamp
+            edge_costs: Dict of edge_id -> cost
+            hotspots: List of hotspot edge_ids
+            bypass_routes: List of (source, target, path) tuples
+            trends: Dict of edge_id -> trend ('increasing', 'decreasing', 'stable')
+            incidents: List of edge_ids with active incidents
+        """
+        analysis_data = {
+            'cycle': cycle,
+            'timestamp': timestamp,
+            'edge_costs': edge_costs,
+            'hotspots': hotspots,
+            'bypass_count': len(bypass_routes),
+            'bypass_routes': [
+                {
+                    'source': route['source'],
+                    'destination': route['destination'],
+                    'path': route['path'],
+                    'total_cost': route.get('total_cost', 0.0),
+                    'bypasses': route.get('bypasses', None)
+                }
+                for route in bypass_routes[:10]  # Store first 10 for space
+            ],
+            'trends': trends,
+            'incidents': incidents,
+            'incident_count': len(incidents)
+        }
+        
+        # Log as adaptation decision with type 'analyze_result'
+        self.log_decision(
+            cycle=cycle,
+            stage='analyze',
+            decision_type='analyze_result',
+            reasoning={
+                'hotspot_count': len(hotspots),
+                'bypass_count': len(bypass_routes),
+                'incident_count': len(incidents),
+                'avg_cost': sum(edge_costs.values()) / len(edge_costs) if edge_costs else 0
+            },
+            context=analysis_data
+        )
+        
+        logger.debug(f"Stored analysis results: {len(hotspots)} hotspots, {len(bypass_routes)} bypasses")
+    
+    def store_plan_result(self, cycle: int, timestamp: float,
+                         adaptations: List[Dict],
+                         coordination_groups: List[List[str]],
+                         incident_mode: bool,
+                         algorithm: str = 'ucb',
+                         context_features: Dict = None) -> None:
+        """
+        Store planning stage results for debugging and tracking.
+        
+        Args:
+            cycle: Current cycle number
+            timestamp: Planning timestamp
+            adaptations: List of planned adaptations with plan_id, phase_id, offset
+            coordination_groups: List of coordinated intersection groups
+            incident_mode: Whether planning was done in incident mode
+            algorithm: Bandit algorithm used ('ucb', 'epsilon_greedy', etc.)
+            context_features: Context features used for selection
+        """
+        plan_data = {
+            'cycle': cycle,
+            'timestamp': timestamp,
+            'adaptations': adaptations,
+            'coordination_groups': coordination_groups,
+            'incident_mode': incident_mode,
+            'algorithm': algorithm,
+            'context_features': context_features or {}
+        }
+        
+        # Log as adaptation decision with type 'plan_result'
+        self.log_decision(
+            cycle=cycle,
+            stage='plan',
+            decision_type='plan_result',
+            reasoning={
+                'adaptation_count': len(adaptations),
+                'coordinated_groups': len(coordination_groups),
+                'incident_mode': incident_mode,
+                'algorithm': algorithm
+            },
+            context=plan_data
+        )
+        
+        logger.debug(f"Stored plan results: {len(adaptations)} adaptations, algorithm={algorithm}")
     
     def clear_cache(self) -> None:
         """Clear in-memory caches."""

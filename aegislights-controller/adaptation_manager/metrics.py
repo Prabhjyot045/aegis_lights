@@ -25,34 +25,74 @@ class MetricsCalculator:
         self.knowledge = knowledge
         self.graph = graph
         
-    def calculate(self, cycle: int, timestamp: float) -> Dict[str, float]:
+    def calculate(self, cycle: int, timestamp: float, monitor_result: Dict = None) -> Dict[str, float]:
         """
         Calculate performance metrics for current cycle.
+        
+        Metrics include delay, queue, network cost, and spillbacks.
         
         Args:
             cycle: Current cycle number
             timestamp: Current timestamp
+            monitor_result: Optional monitor result with average_travel_time
             
         Returns:
             Dict of metric name to value
         """
-        # Get current graph state
+        # Get current graph state from database
         graph_state = self.knowledge.get_graph_state()
+        
+        # Calculate edge-based metrics from graph model
+        avg_delay = 0.0
+        avg_queue = 0.0
+        network_cost = 0.0
+        spillback_count = 0
+        
+        edge_count = len(self.graph.edges)
+        
+        if edge_count > 0:
+            for edge in self.graph.edges.values():
+                avg_delay += edge.current_delay
+                avg_queue += edge.current_queue
+                network_cost += edge.edge_cost
+                if edge.spillback_active:
+                    spillback_count += 1
+            
+            avg_delay /= edge_count
+            avg_queue /= edge_count
+        
+        # Get real average travel time from monitor if available
+        avg_trip_time = None
+        if monitor_result and 'average_travel_time' in monitor_result:
+            avg_trip_time = monitor_result['average_travel_time']
+        
+        # If not available, fall back to delay estimate
+        if avg_trip_time is None:
+            avg_trip_time = avg_delay
         
         # Calculate metrics
         metrics = {
-            'avg_trip_time': self._calculate_avg_trip_time(graph_state),
-            'p95_trip_time': self._calculate_p95_trip_time(graph_state),
-            'total_spillbacks': self._count_spillbacks(graph_state),
-            'total_stops': self._estimate_stops(graph_state),
-            'incident_clearance_time': self._get_incident_clearance_time(),
-            'utility_score': 0.0  # Calculated by rollback manager
+            'avg_delay': avg_delay,
+            'avg_queue': avg_queue,
+            'network_cost': network_cost,
+            'total_spillbacks': spillback_count,
+            'total_edges': edge_count,
+            'cycle': cycle,
+            'timestamp': timestamp,
+            # Database expects these field names
+            'avg_trip_time': avg_trip_time,  # Use real value from simulator
+            'p95_trip_time': None,  # Could calculate percentile later
+            'total_stops': None,  # Not tracked currently
+            'incident_clearance_time': None,  # Would need incident tracking
+            'utility_score': network_cost  # Use network cost as utility
         }
         
         # Store in database
         conn = get_connection(self.knowledge.db_path)
         insert_performance_metrics(conn, cycle, timestamp, metrics)
         close_connection(conn)
+        
+        logger.debug(f"Calculated metrics: delay={avg_delay:.2f}, queue={avg_queue:.2f}, cost={network_cost:.2f}")
         
         return metrics
     

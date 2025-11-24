@@ -5,55 +5,66 @@ from typing import Optional, Dict, List
 
 
 class RoadSegment(BaseModel):
-    """Schema for a road segment from one intersection to another."""
+    """Schema for a road segment (edge) from CityFlow simulator."""
     
-    to_intersection: str = Field(description="Destination intersection ID")
+    edge_id: str = Field(description="Edge ID (e.g., 'AB', 'A1')")
+    from_intersection: str = Field(description="Source intersection/node ID")
+    to_intersection: str = Field(description="Destination intersection/node ID")
     capacity: float = Field(ge=0, description="Road capacity (vehicles)")
     free_flow_time: float = Field(ge=0, description="Free flow travel time (seconds)")
-    current_queue: float = Field(ge=0, description="Current queue length (vehicles)")
+    current_queue: float = Field(ge=0, description="Queue length from lane data (vehicles)")
+    current_delay: float = Field(ge=0, description="Average delay (seconds)")
     spillback_active: bool = Field(default=False, description="Whether spillback is occurring")
     incident_active: bool = Field(default=False, description="Whether an incident is present")
-    current_delay: Optional[float] = Field(None, ge=0, description="Current delay (seconds)")
     current_flow: Optional[float] = Field(None, ge=0, description="Current flow (vehicles/hour)")
+    length: Optional[float] = Field(None, ge=0, description="Road length (meters)")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "to_intersection": "int_2",
-                "capacity": 1.5,
+                "edge_id": "AB",
+                "from_intersection": "A",
+                "to_intersection": "B",
+                "capacity": 100.0,
                 "free_flow_time": 30.0,
                 "current_queue": 10,
+                "current_delay": 5.5,
                 "spillback_active": False,
                 "incident_active": False,
-                "current_delay": 5.5,
-                "current_flow": 0.8
+                "current_flow": 0.8,
+                "length": 300.0
             }
         }
 
 
 class IntersectionData(BaseModel):
-    """Schema for intersection and its outgoing roads."""
+    """Schema for intersection data from CityFlow."""
     
-    intersection_id: str = Field(description="Unique intersection identifier")
-    outgoing_roads: List[RoadSegment] = Field(description="Roads leaving this intersection")
-    signal_state: Optional[str] = Field(None, description="Current signal phase/state")
+    intersection_id: str = Field(description="Unique intersection identifier (A, B, C, D, E, 1-8)")
+    is_virtual: bool = Field(default=False, description="True for virtual nodes (1-8), False for signalized (A-E)")
+    outgoing_roads: List[RoadSegment] = Field(description="Roads/edges leaving this intersection")
+    current_phase: Optional[int] = Field(None, description="Current phase index (0-3 for signalized)")
     timestamp: Optional[float] = Field(None, description="Timestamp of data")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "intersection_id": "int_1",
+                "intersection_id": "A",
+                "is_virtual": False,
                 "outgoing_roads": [
                     {
-                        "to_intersection": "int_2",
-                        "capacity": 1.5,
+                        "edge_id": "AB",
+                        "from_intersection": "A",
+                        "to_intersection": "B",
+                        "capacity": 100.0,
                         "free_flow_time": 30.0,
                         "current_queue": 10,
+                        "current_delay": 5.5,
                         "spillback_active": False,
                         "incident_active": False
                     }
                 ],
-                "signal_state": "NS_GREEN",
+                "current_phase": 0,
                 "timestamp": 1234567890.0
             }
         }
@@ -67,15 +78,22 @@ class NetworkSnapshot(BaseModel):
     )
     cycle_number: int = Field(description="Simulation cycle number")
     timestamp: float = Field(description="Snapshot timestamp")
+    average_travel_time: Optional[float] = Field(None, description="Average travel time from simulator (seconds)")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "intersections": {
-                    "int_1": {
-                        "intersection_id": "int_1",
+                    "A": {
+                        "intersection_id": "A",
+                        "is_virtual": False,
                         "outgoing_roads": [],
-                        "signal_state": "NS_GREEN"
+                        "current_phase": 0
+                    },
+                    "1": {
+                        "intersection_id": "1",
+                        "is_virtual": True,
+                        "outgoing_roads": []
                     }
                 },
                 "cycle_number": 1,
@@ -108,21 +126,19 @@ class EdgeData(BaseModel):
 
 
 class SignalConfiguration(BaseModel):
-    """Schema for signal timing configuration."""
+    """Schema for signal timing configuration for CityFlow."""
     
-    intersection_id: str
-    plan_id: str
-    green_splits: Dict[str, float] = Field(description="Phase ID to green time mapping")
-    cycle_length: float = Field(gt=0, description="Total cycle length in seconds")
+    intersection_id: str = Field(description="Intersection ID (A, B, C, D, E)")
+    phase_id: int = Field(ge=0, le=3, description="Phase index (0-3)")
+    plan_id: Optional[str] = Field(None, description="Plan ID for tracking (e.g., A_2phase_ns_priority)")
     offset: float = Field(default=0.0, description="Offset for coordination in seconds")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "intersection_id": "int_1",
-                "plan_id": "plan_2phase",
-                "green_splits": {"phase_ns": 40.0, "phase_ew": 40.0},
-                "cycle_length": 90.0,
+                "intersection_id": "A",
+                "phase_id": 0,
+                "plan_id": "A_2phase_ns_priority",
                 "offset": 0.0
             }
         }

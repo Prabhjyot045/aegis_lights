@@ -115,6 +115,44 @@ class Analyzer:
         logger.info(f"[Analyze] Completed: {len(hotspots)} hotspots, "
                    f"{len(bypasses)} bypasses, {len(incidents)} incidents")
         
+        # Store analysis results in database for tracking
+        import time
+        timestamp = time.time()
+        
+        # Convert edge_costs from (from, to) tuples to edge_id strings
+        edge_costs_by_id = {}
+        for edge in self.graph.edges.values():
+            key = (edge.from_node, edge.to_node)
+            if key in edge_costs:
+                edge_costs_by_id[edge.edge_id] = edge_costs[key]
+        
+        # Convert hotspots to edge_id list
+        hotspot_ids = []
+        for edge in self.graph.edges.values():
+            key = (edge.from_node, edge.to_node)
+            if key in hotspots:
+                hotspot_ids.append(edge.edge_id)
+        
+        # Convert trends to edge_id dict
+        trends_by_id = {}
+        for edge in self.graph.edges.values():
+            key = (edge.from_node, edge.to_node)
+            if key in trends:
+                trends_by_id[edge.edge_id] = trends[key]
+        
+        # Get incident edge_ids
+        incident_ids = [inc['edge_id'] for inc in incidents if 'edge_id' in inc]
+        
+        self.knowledge.store_analysis_result(
+            cycle=cycle,
+            timestamp=timestamp,
+            edge_costs=edge_costs_by_id,
+            hotspots=hotspot_ids,
+            bypass_routes=bypasses,
+            trends=trends_by_id,
+            incidents=incident_ids
+        )
+        
         return {
             'cycle': cycle,
             'edge_costs': edge_costs,

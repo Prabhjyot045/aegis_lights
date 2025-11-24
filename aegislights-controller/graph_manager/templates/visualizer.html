@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AEGIS LIGHTS - Traffic Network Visualizer</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            overflow: hidden;
+        }
+
+        #header {
+            background: #16213e;
+            padding: 15px 30px;
+            border-bottom: 2px solid #0f3460;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 24px;
+            color: #00d9ff;
+            margin: 0;
+        }
+
+        #metrics {
+            display: flex;
+            gap: 24px;
+        }
+
+        .metric {
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00d9ff;
+        }
+
+        .metric-label {
+            font-size: 11px;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        #container {
+            display: flex;
+            height: calc(100vh - 70px);
+        }
+
+        #graph-container {
+            flex: 1;
+            position: relative;
+            padding: 12px 16px;
+        }
+
+        #graph {
+            background: #0b1020;
+            border-radius: 8px;
+            box-shadow: 0 0 14px rgba(0, 0, 0, 0.45);
+        }
+
+        #sidebar {
+            width: 300px;
+            background: #16213e;
+            border-left: 2px solid #0f3460;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        #sidebar h2 {
+            font-size: 18px;
+            color: #00d9ff;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #0f3460;
+            padding-bottom: 8px;
+        }
+
+        .info-item {
+            margin-bottom: 12px;
+            padding: 10px;
+            background: #0f3460;
+            border-radius: 4px;
+        }
+
+        .info-label {
+            font-size: 11px;
+            color: #aaa;
+            text-transform: uppercase;
+        }
+
+        .info-value {
+            font-size: 16px;
+            color: #fff;
+            margin-top: 4px;
+        }
+
+        svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .node-circle {
+            cursor: pointer;
+            transition: transform 0.15s ease-out, stroke-width 0.15s ease-out;
+        }
+
+        .node-circle:hover {
+            stroke-width: 3px;
+            transform: scale(1.06);
+        }
+
+        .node-label {
+            font-size: 12px;
+            font-weight: 600;
+            fill: #e0f7ff;
+            text-anchor: middle;
+            pointer-events: none;
+            paint-order: stroke;
+            stroke: rgba(0, 0, 0, 0.7);
+            stroke-width: 3px;
+        }
+
+        .link {
+            stroke-opacity: 0.7;
+            transition: stroke-width 0.2s ease-out, stroke-opacity 0.2s ease-out;
+        }
+
+        .link:hover {
+            stroke-opacity: 1;
+            stroke-width: 3px;
+        }
+
+        .link-label {
+            font-size: 10px;
+            fill: #f5f5f5;
+            pointer-events: none;
+        }
+
+        .link-label-bg {
+            pointer-events: none;
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            right: 26px;
+            background: rgba(22, 33, 62, 0.96);
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid #0f3460;
+        }
+
+        .legend-title {
+            font-size: 13px;
+            font-weight: bold;
+            color: #00d9ff;
+            margin-bottom: 8px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 4px 0;
+            font-size: 12px;
+            color: #ddd;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            margin-right: 8px;
+            border: 2px solid #fff;
+        }
+
+        #status {
+            position: absolute;
+            top: 24px;
+            left: 28px;
+            background: rgba(22, 33, 62, 0.96);
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 1px solid #0f3460;
+            font-size: 13px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        .status-live {
+            background: #00ff88;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        #charts {
+            margin-top: 20px;
+        }
+
+        .chart-container {
+            background: #0f3460;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+
+        .chart-title {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>🚦 AEGIS LIGHTS - CityFlow Traffic Network</h1>
+        <div id="metrics">
+            <div class="metric">
+                <div class="metric-value" id="cycle-value">0</div>
+                <div class="metric-label">Cycle</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="delay-value">0</div>
+                <div class="metric-label">Avg Delay (s)</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="trip-time-value">0</div>
+                <div class="metric-label">Avg Trip Time (s)</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="incidents-value">0</div>
+                <div class="metric-label">Incidents</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="adaptations-value">0</div>
+                <div class="metric-label">Adaptations</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="container">
+        <div id="graph-container">
+            <svg id="graph"></svg>
+            
+            <div id="status">
+                <span class="status-indicator status-live"></span>
+                <span>Live Update</span>
+            </div>
+
+            <div class="legend">
+                <div class="legend-title">Legend</div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #4CAF50;"></div>
+                    <span>Normal</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #FF9800;"></div>
+                    <span>Congested</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #F44336;"></div>
+                    <span>Incident/Spillback</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #2196F3;"></div>
+                    <span>Signalized Intersection</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #9E9E9E;"></div>
+                    <span>Virtual Node</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="sidebar">
+            <h2>Network Statistics</h2>
+            <div class="info-item">
+                <div class="info-label">Network Cost</div>
+                <div class="info-value" id="network-cost">0</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Total Spillbacks</div>
+                <div class="info-value" id="total-spillbacks">0</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Avg Trip Time</div>
+                <div class="info-value" id="avg-trip-time">0 s</div>
+            </div>
+
+            <div id="charts">
+                <h2>Performance History</h2>
+                <div class="chart-container">
+                    <div class="chart-title">Network Cost Trend</div>
+                    <svg id="cost-chart" width="260" height="100"></svg>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Average Delay Trend</div>
+                    <svg id="delay-chart" width="260" height="100"></svg>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Average Trip Time Trend</div>
+                    <svg id="trip-time-chart" width="260" height="100"></svg>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration (templated from backend)
+        const AUTO_REFRESH = {{ auto_refresh|lower }};
+        const REFRESH_INTERVAL = {{ refresh_interval }};
+
+        // SVG & layout setup
+        const graphContainer = document.getElementById('graph-container');
+        const svg = d3.select('#graph');
+        let width = graphContainer.clientWidth || (window.innerWidth - 320);
+        let height = graphContainer.clientHeight || (window.innerHeight - 80);
+
+        svg
+            .attr('width', width)
+            .attr('height', height)
+            .attr('viewBox', `0 0 ${width} ${height}`);
+
+        const graphLayer = svg.append('g').attr('class', 'graph-layer');
+
+        // Arrow markers
+        const defs = svg.append('defs');
+        const markerTypes = ['normal', 'congested', 'incident'];
+
+        const markerColor = d => {
+            if (d === 'incident') return '#F44336';
+            if (d === 'congested') return '#FF9800';
+            return '#7a7a7a';
+        };
+
+        defs.selectAll('marker')
+            .data(markerTypes)
+            .enter()
+            .append('marker')
+            .attr('id', d => `arrow-${d}`)
+            .attr('viewBox', '0 -5 10 10')
+            .attr('refX', 18)
+            .attr('refY', 0)
+            .attr('markerWidth', 6)
+            .attr('markerHeight', 6)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M0,-5L10,0L0,5')
+            .attr('fill', markerColor);
+
+        // Zoom / pan
+        const zoom = d3.zoom()
+            .scaleExtent([0.6, 3])
+            .on('zoom', (event) => {
+                graphLayer.attr('transform', event.transform);
+            });
+        svg.call(zoom).on('dblclick.zoom', null);
+
+        // State for graph so we don't recreate it every time
+        let graphInitialized = false;
+        let nodes = [];
+        let links = [];
+        let linkSel, nodeSel, edgeLabelSel;
+
+        // Fetch and update data
+        function updateVisualization() {
+            Promise.all([
+                fetch('/api/network').then(r => r.json()),
+                fetch('/api/metrics').then(r => r.json()),
+                fetch('/api/history').then(r => r.json())
+            ]).then(([network, metrics, history]) => {
+                updateMetrics(metrics);
+                updateGraph(network);
+                updateCharts(history);
+            }).catch(err => {
+                console.error('Error fetching data:', err);
+            });
+        }
+
+        function updateMetrics(metrics) {
+            document.getElementById('cycle-value').textContent = metrics.cycle;
+            document.getElementById('delay-value').textContent = metrics.avg_delay.toFixed(1);
+            document.getElementById('trip-time-value').textContent = (metrics.avg_trip_time || 0).toFixed(1);
+            document.getElementById('incidents-value').textContent = metrics.incidents;
+            document.getElementById('adaptations-value').textContent = metrics.adaptations;
+            document.getElementById('network-cost').textContent = metrics.network_cost.toFixed(1);
+            document.getElementById('total-spillbacks').textContent = metrics.total_spillbacks;
+            document.getElementById('avg-trip-time').textContent = (metrics.avg_trip_time || 0).toFixed(1) + ' s';
+        }
+
+        function layoutWithForces(nodes, links) {
+            const sim = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(links).id(d => d.id).distance(220))
+                .force('charge', d3.forceManyBody().strength(-800))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => d.type === 'signalized' ? 26 : 22));
+
+            sim.stop();
+            for (let i = 0; i < 200; i++) sim.tick();
+        }
+
+        function initGraph(data) {
+            graphLayer.selectAll('*').remove();
+
+            nodes = data.nodes.map(d => ({ ...d }));
+            links = data.edges.map(d => ({ ...d }));
+
+            layoutWithForces(nodes, links);
+
+            // LINKS
+            const linkGroup = graphLayer.append('g').attr('class', 'links');
+            linkSel = linkGroup.selectAll('line')
+                .data(links)
+                .enter()
+                .append('line')
+                .attr('class', 'link');
+
+            // NODES (group = circle + label)
+            const nodeGroup = graphLayer.append('g').attr('class', 'nodes');
+            nodeSel = nodeGroup.selectAll('.node-group')
+                .data(nodes)
+                .enter()
+                .append('g')
+                .attr('class', 'node-group');
+
+            nodeSel.append('circle')
+                .attr('class', 'node-circle')
+                .attr('r', d => d.type === 'signalized' ? 18 : 12)
+                .attr('fill', d => d.type === 'signalized' ? '#2196F3' : '#9E9E9E')
+                .attr('stroke', '#ffffff')
+                .attr('stroke-width', 2);
+
+            nodeSel.append('text')
+                .attr('class', 'node-label')
+                .attr('dy', 4)
+                .text(d => d.id);
+
+            // EDGE LABELS (group with rect + text)
+            const labelGroup = graphLayer.append('g').attr('class', 'edge-labels');
+            edgeLabelSel = labelGroup.selectAll('.link-label-group')
+                .data(links)
+                .enter()
+                .append('g')
+                .attr('class', 'link-label-group');
+
+            edgeLabelSel.append('rect')
+                .attr('class', 'link-label-bg')
+                .attr('fill', 'rgba(5, 8, 15, 0.9)')
+                .attr('rx', 3);
+
+            edgeLabelSel.append('text')
+                .attr('class', 'link-label')
+                .style('font-size', '9px')
+                .style('font-weight', '500');
+
+            // Drag for manual adjustment
+            const drag = d3.drag()
+                .on('start', (event, d) => {
+                    d.fx = d.x;
+                    d.fy = d.y;
+                })
+                .on('drag', (event, d) => {
+                    d.x = event.x;
+                    d.y = event.y;
+                    positionElements();
+                })
+                .on('end', (event, d) => {
+                    d.fx = null;
+                    d.fy = null;
+                });
+
+            nodeSel.call(drag);
+
+            positionElements();      // initial placement
+            updateVisualAttributes(); // colors + label text based on metrics
+
+            graphInitialized = true;
+        }
+
+        function updateGraph(data) {
+            if (!graphInitialized) {
+                initGraph(data);
+                return;
+            }
+
+            // Assume same topology; just update metric fields on links.
+            const newEdges = data.edges;
+            links.forEach((l, i) => {
+                const src = newEdges[i];
+                if (!src) return;
+                l.queue = src.queue;
+                l.delay = src.delay;
+                l.cost = src.cost;
+                l.incident = src.incident;
+                l.spillback = src.spillback;
+            });
+
+            // (If nodes also carry dynamic fields you care about, update them here.)
+
+            updateVisualAttributes();
+        }
+
+        // Position nodes, links, and edge labels (called once + after drags)
+        function positionElements() {
+            if (!linkSel || !nodeSel || !edgeLabelSel) return;
+
+            linkSel
+                .attr('x1', d => d.source.x)
+                .attr('y1', d => d.source.y)
+                .attr('x2', d => d.target.x)
+                .attr('y2', d => d.target.y);
+
+            nodeSel
+                .attr('transform', d => `translate(${d.x},${d.y})`);
+
+            edgeLabelSel.each(function(d) {
+                const midX = (d.source.x + d.target.x) / 2;
+                const midY = (d.source.y + d.target.y) / 2;
+                const dx = d.target.x - d.source.x;
+                const dy = d.target.y - d.source.y;
+                const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                const perpX = -dy / len;
+                const perpY = dx / len;
+                const offset = 14;
+                const x = midX + perpX * offset;
+                const y = midY + perpY * offset;
+                d3.select(this).attr('transform', `translate(${x},${y})`);
+            });
+
+            // After positioning the label groups, size the background rects
+            edgeLabelSel.each(function() {
+                const text = d3.select(this).select('text');
+                const rect = d3.select(this).select('rect');
+                const bbox = text.node().getBBox();
+                rect
+                    .attr('x', bbox.x - 3)
+                    .attr('y', bbox.y - 2)
+                    .attr('width', bbox.width + 6)
+                    .attr('height', bbox.height + 4);
+            });
+        }
+
+        // Update strokes, widths, and label texts when metrics change
+        function updateVisualAttributes() {
+            if (!linkSel || !edgeLabelSel) return;
+
+            linkSel
+                .attr('stroke', d => {
+                    if (d.incident || d.spillback) return '#F44336';
+                    if (d.cost > 20) return '#FFB74D';
+                    return '#6f7a8a';
+                })
+                .attr('stroke-width', d => Math.min(1.5 + (d.queue || 0) / 8, 6))
+                .attr('marker-end', d => {
+                    if (d.incident || d.spillback) return 'url(#arrow-incident)';
+                    if (d.cost > 20) return 'url(#arrow-congested)';
+                    return 'url(#arrow-normal)';
+                });
+
+            edgeLabelSel.select('text')
+                .text(d => `Q:${Math.round(d.queue || 0)} D:${(d.delay || 0).toFixed(1)}s`);
+
+            // Background rects need to be re-sized because text changed
+            edgeLabelSel.each(function() {
+                const text = d3.select(this).select('text');
+                const rect = d3.select(this).select('rect');
+                const bbox = text.node().getBBox();
+                rect
+                    .attr('x', bbox.x - 3)
+                    .attr('y', bbox.y - 2)
+                    .attr('width', bbox.width + 6)
+                    .attr('height', bbox.height + 4);
+            });
+        }
+
+        function updateCharts(data) {
+            if (!data.history || data.history.length === 0) return;
+
+            const costSvg = d3.select('#cost-chart');
+            const delaySvg = d3.select('#delay-chart');
+            const tripTimeSvg = d3.select('#trip-time-chart');
+
+            costSvg.selectAll('*').remove();
+            delaySvg.selectAll('*').remove();
+            tripTimeSvg.selectAll('*').remove();
+
+            const xWidth = 260;
+            const yHeight = 100;
+
+            const costData = data.history.map(d => d.network_cost);
+            const delayData = data.history.map(d => d.avg_delay);
+            const tripTimeData = data.history.map(d => d.avg_trip_time || 0);
+
+            const xScale = d3.scaleLinear().domain([0, costData.length - 1]).range([0, xWidth]);
+
+            const drawLineChart = (svgEl, values) => {
+                const yMax = d3.max(values) || 1;
+                const yScale = d3.scaleLinear().domain([0, yMax]).range([yHeight, 0]);
+
+                const line = d3.line()
+                    .x((d, i) => xScale(i))
+                    .y(d => yScale(d));
+
+                svgEl.append('path')
+                    .datum(values)
+                    .attr('fill', 'none')
+                    .attr('stroke', '#00d9ff')
+                    .attr('stroke-width', 2)
+                    .attr('d', line);
+            };
+
+            drawLineChart(costSvg, costData);
+            drawLineChart(delaySvg, delayData);
+            drawLineChart(tripTimeSvg, tripTimeData);
+        }
+
+        // Initial load
+        updateVisualization();
+
+        // Auto-refresh
+        if (AUTO_REFRESH) {
+            setInterval(updateVisualization, REFRESH_INTERVAL);
+        }
+
+        // Resize handler (re-layout once; keeps positions but rescales viewport)
+        window.addEventListener('resize', () => {
+            width = graphContainer.clientWidth || (window.innerWidth - 320);
+            height = graphContainer.clientHeight || (window.innerHeight - 80);
+            svg
+                .attr('width', width)
+                .attr('height', height)
+                .attr('viewBox', `0 0 ${width} ${height}`);
+        });
+    </script>
+</body>
+</html>

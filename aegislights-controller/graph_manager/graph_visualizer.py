@@ -1,309 +1,400 @@
-"""Live graph visualization with recording capability."""
+"""Web-based live graph visualization using Flask and D3.js.
+
+Runs as standalone web server that queries database for real-time network state.
+Can be started independently from MAPE loop for live monitoring.
+"""
 
 import logging
-from typing import Optional, Dict
+import json
+import time
+import threading
+import sqlite3
+from typing import Optional, Dict, List
 from pathlib import Path
-import matplotlib
-matplotlib.use('TkAgg')  # Use Tk backend for interactive mode
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.animation import FuncAnimation
-import networkx as nx
+from datetime import datetime
 
-from .graph_model import TrafficGraph
+try:
+    from flask import Flask, render_template, jsonify, send_from_directory
+    from flask_cors import CORS
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    logging.warning("Flask not available. Install with: pip install flask flask-cors")
+
 from config.visualization import VisualizationConfig
 
 logger = logging.getLogger(__name__)
 
 
 class GraphVisualizer:
-    """Real-time visualization of traffic graph state using matplotlib interactive mode."""
+    """
+    Web-based real-time visualization of traffic graph state.
     
-    def __init__(self, graph: TrafficGraph, record: bool = False,
-                 output_dir: Optional[Path] = None):
+    Runs Flask web server that serves interactive D3.js visualization.
+    Queries database independently for network state updates.
+    """
+    
+    def __init__(self, db_path: str, host: str = '0.0.0.0', port: int = 5001,
+                 auto_refresh: bool = True, refresh_interval: int = 2):
         """
-        Initialize graph visualizer.
+        Initialize web-based graph visualizer.
         
         Args:
-            graph: Traffic graph to visualize
-            record: Whether to record video
-            output_dir: Directory for recording output
+            db_path: Path to SQLite database
+            host: Host address for web server (0.0.0.0 for all interfaces)
+            port: Port for web server (default: 5001)
+            auto_refresh: Whether to auto-refresh visualization
+            refresh_interval: Refresh interval in seconds
         """
-        self.graph = graph
+        if not FLASK_AVAILABLE:
+            raise ImportError("Flask is required for web visualization. Install with: pip install flask flask-cors")
+        
+        self.db_path = db_path
+        self.host = host
+        self.port = port
+        self.auto_refresh = auto_refresh
+        self.refresh_interval = refresh_interval
         self.config = VisualizationConfig()
-        self.record = record
-        self.output_dir = Path(output_dir) if output_dir else Path("output/videos")
         
         self.running = False
-        self._frame_count = 0
-        self._animation = None
+        self._server_thread = None
+        self._app = None
         
-        # Matplotlib components
-        self.fig = None
-        self.ax = None
-        self.pos = None  # Node positions (computed once)
-        self.writer = None
-        
-        # Metrics cache for display
-        self._metrics_cache: Dict = {
-            'cycle': 0,
-            'incidents': 0,
-            'adaptations': 0,
-            'avg_delay': 0.0
-        }
-        
-        if self.record:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Web visualizer initialized on http://{host}:{port}")
     
     def start(self) -> None:
-        """Start the visualizer with interactive mode."""
+        """
+        Start the web server in a separate thread.
+        Non-blocking - allows MAPE loop to continue or run independently.
+        """
         if self.running:
             logger.warning("Visualizer already running")
             return
         
+        if not FLASK_AVAILABLE:
+            logger.error("Flask not available. Cannot start web visualizer.")
+            return
+        
         self.running = True
-        self._initialize_plot()
+        self._create_flask_app()
         
-        # Turn on interactive mode
-        plt.ion()
-        plt.show(block=False)
+        # Start Flask server in daemon thread
+        self._server_thread = threading.Thread(
+            target=self._run_flask_server,
+            daemon=True
+        )
+        self._server_thread.start()
         
-        logger.info("Graph visualizer started")
+        logger.info(f"✅ Web visualizer started at http://{self.host}:{self.port}")
+        logger.info(f"   Open in browser: http://localhost:{self.port}")
+        logger.info(f"   Auto-refresh: {self.auto_refresh} (interval: {self.refresh_interval}s)")
     
     def stop(self) -> None:
-        """Stop the visualizer and save recording if enabled."""
+        """Stop the web server."""
         if not self.running:
             return
         
         self.running = False
-        
-        if self._animation:
-            self._animation.event_source.stop()
-        
-        if self.record:
-            self._finalize_recording()
-        
-        if self.fig:
-            plt.ioff()
-            plt.close(self.fig)
-        
-        logger.info("Graph visualizer stopped")
+        logger.info("Web visualizer stopped")
     
-    def update(self) -> None:
+    def update(self, graph=None) -> None:
         """
-        Manually update visualization with current graph state.
-        Call this after making changes to the graph to refresh the display.
+        No-op for web visualizer (queries database directly).
+        Kept for compatibility with existing code.
         """
-        if self.running and self.fig:
-            self._render_frame()
-    
-    def pause_until_closed(self) -> None:
-        """
-        Keep the visualization window open until user closes it.
-        Blocks execution until window is closed.
-        """
-        if self.fig and plt.fignum_exists(self.fig.number):
-            plt.ioff()
-            plt.show()  # Blocking show
-    
-    def update_metrics(self, cycle: int, incidents: int, adaptations: int, avg_delay: float) -> None:
-        """Update metrics display cache."""
-        self._metrics_cache = {
-            'cycle': cycle,
-            'incidents': incidents,
-            'adaptations': adaptations,
-            'avg_delay': avg_delay
-        }
-    
-    def _initialize_plot(self) -> None:
-        """Initialize matplotlib figure and compute layout."""
-        self.fig, self.ax = plt.subplots(figsize=(16, 9))
-        self.fig.canvas.manager.set_window_title(self.config.window_title)
-        
-        # Compute node positions using NetworkX layout
-        nx_graph = self._to_networkx()
-        
-        if self.config.layout_algorithm == 'spring':
-            self.pos = nx.spring_layout(nx_graph, k=2, iterations=50)
-        elif self.config.layout_algorithm == 'circular':
-            self.pos = nx.circular_layout(nx_graph)
-        else:  # kamada_kawai
-            self.pos = nx.kamada_kawai_layout(nx_graph)
-        
-        logger.info(f"Layout computed with {len(self.pos)} nodes")
-        
-        # Render initial frame
-        self._render_frame()
-    
-    def _render_frame(self) -> None:
-        """Render a single frame of the visualization."""
-        if not self.ax or not self.pos:
-            return
-        
-        self.ax.clear()
-        self.ax.set_title(
-            f"Traffic Network - Cycle {self._metrics_cache['cycle']} | "
-            f"Incidents: {self._metrics_cache['incidents']} | "
-            f"Adaptations: {self._metrics_cache['adaptations']} | "
-            f"Avg Delay: {self._metrics_cache['avg_delay']:.1f}s",
-            fontsize=14, pad=20
-        )
-        self.ax.axis('off')
-        
-        # Get node and edge colors/widths
-        node_colors = [self._get_node_color(self.graph.nodes[node_id]) 
-                      for node_id in self.pos.keys()]
-        
-        edge_colors = []
-        edge_widths = []
-        for edge_key in self.graph.edges.keys():
-            edge = self.graph.edges[edge_key]
-            edge_colors.append(self._get_edge_color(edge))
-            edge_widths.append(self._get_edge_width(edge))
-        
-        # Convert to NetworkX for drawing
-        nx_graph = self._to_networkx()
-        
-        # Draw edges
-        nx.draw_networkx_edges(
-            nx_graph, self.pos, ax=self.ax,
-            edge_color=edge_colors,
-            width=edge_widths,
-            arrows=True,
-            arrowsize=15,
-            arrowstyle='->',
-            connectionstyle='arc3,rad=0.1'
-        )
-        
-        # Draw nodes
-        nx.draw_networkx_nodes(
-            nx_graph, self.pos, ax=self.ax,
-            node_color=node_colors,
-            node_size=self.config.node_size,
-            node_shape=self.config.node_shape,
-            edgecolors='black',
-            linewidths=2
-        )
-        
-        # Draw node IDs
-        nx.draw_networkx_labels(
-            nx_graph, self.pos, ax=self.ax,
-            font_size=8,
-            font_weight='bold'
-        )
-        
-        # Add edge labels with queue/delay metrics
-        edge_labels = {}
-        for edge_key, edge in self.graph.edges.items():
-            from_node, to_node = edge_key
-            label = f"Q:{edge.current_queue:.0f}\nD:{edge.current_delay:.1f}s"
-            edge_labels[(from_node, to_node)] = label
-        
-        nx.draw_networkx_edge_labels(
-            nx_graph, self.pos, edge_labels, ax=self.ax,
-            font_size=6,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8)
-        )
-        
-        # Add legend
-        self._add_legend()
-        
-        # Add metrics panel
-        if self.config.show_metrics_panel:
-            self._add_metrics_panel()
-        
-        plt.tight_layout()
-        
-        # Update display
-        if self.running and plt.fignum_exists(self.fig.number):
-            self.fig.canvas.draw()
-            self.fig.canvas.flush_events()
-            plt.pause(0.001)  # Allow GUI events to process
-        
-        self._frame_count += 1
-    
-    def _finalize_recording(self) -> None:
-        """Placeholder for future video recording functionality."""
-        # Video recording temporarily disabled due to threading issues
-        # Will be reimplemented with alternative approach
         pass
     
-    def _get_node_color(self, node) -> str:
-        """Get color for node based on state."""
-        if node.has_spillback:
-            return self.config.node_color_spillback
-        elif node.is_congested:
-            return self.config.node_color_congested
+    def update_metrics(self, cycle: int, incidents: int, adaptations: int, avg_delay: float) -> None:
+        """
+        No-op for web visualizer (queries database directly).
+        Kept for compatibility with existing code.
+        """
+        pass
+    
+    def _create_flask_app(self) -> None:
+        """Create and configure Flask application."""
+        self._app = Flask(__name__, 
+                         template_folder=str(Path(__file__).parent / 'templates'),
+                         static_folder=str(Path(__file__).parent / 'static'))
+        CORS(self._app)
+        
+        # Route: Main visualization page
+        @self._app.route('/')
+        def index():
+            return render_template('visualizer.html', 
+                                 auto_refresh=self.auto_refresh,
+                                 refresh_interval=self.refresh_interval * 1000)  # Convert to ms
+        
+        # API: Get current network state
+        @self._app.route('/api/network')
+        def get_network():
+            try:
+                data = self._get_network_data()
+                return jsonify(data)
+            except Exception as e:
+                logger.error(f"Error fetching network data: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+        
+        # API: Get current metrics
+        @self._app.route('/api/metrics')
+        def get_metrics():
+            try:
+                data = self._get_metrics_data()
+                return jsonify(data)
+            except Exception as e:
+                logger.error(f"Error fetching metrics: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+        
+        # API: Get performance history
+        @self._app.route('/api/history')
+        def get_history():
+            try:
+                data = self._get_history_data()
+                return jsonify(data)
+            except Exception as e:
+                logger.error(f"Error fetching history: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+        
+        # Disable Flask request logging to reduce console noise
+        import logging as flask_logging
+        flask_log = flask_logging.getLogger('werkzeug')
+        flask_log.setLevel(flask_logging.ERROR)
+    
+    def _run_flask_server(self) -> None:
+        """Run Flask server (called in daemon thread)."""
+        try:
+            self._app.run(host=self.host, port=self.port, debug=False, use_reloader=False)
+        except Exception as e:
+            logger.error(f"Flask server error: {e}", exc_info=True)
+    
+    def _get_network_data(self) -> Dict:
+        """Query database for current network state."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Get latest cycle number
+        cursor.execute("SELECT MAX(last_updated_cycle) as max_cycle FROM graph_state")
+        row = cursor.fetchone()
+        current_cycle = row['max_cycle'] if row and row['max_cycle'] else 0
+        
+        # Get nodes - all intersections from graph_state
+        cursor.execute("""
+            SELECT DISTINCT from_intersection as node_id
+            FROM graph_state
+            UNION
+            SELECT DISTINCT to_intersection as node_id
+            FROM graph_state
+        """)
+        
+        nodes = []
+        for row in cursor.fetchall():
+            nodes.append({
+                'id': row['node_id'],
+                'type': 'signalized' if row['node_id'] in ['A', 'B', 'C', 'D', 'E'] else 'virtual'
+            })
+        
+        # Get edges with current state
+        cursor.execute("""
+            SELECT 
+                edge_id,
+                from_intersection as source,
+                to_intersection as target,
+                current_queue as queue,
+                current_delay as delay,
+                current_flow as flow,
+                spillback_active as spillback,
+                incident_active as incident,
+                capacity,
+                free_flow_time,
+                edge_cost
+            FROM graph_state
+            ORDER BY edge_id
+        """)
+        
+        edges = []
+        for row in cursor.fetchall():
+            # Calculate edge cost
+            cost = (
+                1.0 * (row['delay'] or 0) +
+                0.5 * (row['queue'] or 0) +
+                10.0 * (1 if row['spillback'] else 0) +
+                20.0 * (1 if row['incident'] else 0)
+            )
+            
+            edges.append({
+                'id': row['edge_id'],
+                'source': row['source'],
+                'target': row['target'],
+                'queue': row['queue'] or 0,
+                'delay': row['delay'] or 0,
+                'flow': row['flow'] or 0,
+                'spillback': bool(row['spillback']),
+                'incident': bool(row['incident']),
+                'capacity': row['capacity'] or 1000,
+                'cost': cost
+            })
+        
+        conn.close()
+        
+        return {
+            'cycle': current_cycle,
+            'timestamp': datetime.now().isoformat(),
+            'nodes': nodes,
+            'edges': edges
+        }
+    
+    def _get_metrics_data(self) -> Dict:
+        """Query database for current metrics."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Get latest cycle from performance_metrics
+        cursor.execute("""
+            SELECT 
+                cycle_number,
+                avg_trip_time,
+                total_spillbacks,
+                utility_score,
+                timestamp
+            FROM performance_metrics
+            ORDER BY cycle_number DESC
+            LIMIT 1
+        """)
+        
+        row = cursor.fetchone()
+        if row:
+            metrics = {
+                'cycle': row['cycle_number'],
+                'avg_delay': row['avg_trip_time'] or 0,  # For backward compatibility
+                'avg_trip_time': row['avg_trip_time'] or 0,
+                'network_cost': row['utility_score'] or 0,
+                'total_spillbacks': row['total_spillbacks'] or 0,
+                'timestamp': row['timestamp']
+            }
         else:
-            return self.config.node_color_normal
-    
-    def _get_edge_color(self, edge) -> str:
-        """Get color for edge based on state."""
-        if edge.incident_active:
-            return self.config.edge_color_incident
-        elif edge.edge_cost > 10.0:  # High cost threshold
-            return self.config.edge_color_high_cost
-        else:
-            return self.config.edge_color_normal
-    
-    def _get_edge_width(self, edge) -> float:
-        """Get edge width based on queue length."""
-        return (
-            self.config.edge_width_base + 
-            edge.current_queue * self.config.edge_width_multiplier
-        )
-    
-    def _to_networkx(self) -> nx.DiGraph:
-        """Convert current graph state to NetworkX graph."""
-        G = nx.DiGraph()
+            metrics = {
+                'cycle': 0,
+                'avg_delay': 0,
+                'avg_trip_time': 0,
+                'network_cost': 0,
+                'total_spillbacks': 0,
+                'timestamp': time.time()
+            }
         
-        # Add nodes
-        for node_id in self.graph.nodes.keys():
-            G.add_node(node_id)
+        # Calculate average queue from graph_state
+        cursor.execute("""
+            SELECT AVG(current_queue) as avg_queue
+            FROM graph_state
+        """)
+        row = cursor.fetchone()
+        metrics['avg_queue'] = row['avg_queue'] if row and row['avg_queue'] else 0
         
-        # Add edges
-        for edge_key, edge in self.graph.edges.items():
-            from_node, to_node = edge_key
-            G.add_edge(from_node, to_node, weight=edge.edge_cost)
+        # Get count of active incidents
+        cursor.execute("""
+            SELECT COUNT(*) as incident_count
+            FROM graph_state
+            WHERE incident_active = 1
+        """)
         
-        return G
+        row = cursor.fetchone()
+        metrics['incidents'] = row['incident_count'] if row else 0
+        
+        # Get count of recent adaptations
+        cursor.execute("""
+            SELECT COUNT(*) as adaptation_count
+            FROM signal_configurations
+            WHERE cycle_number = ?
+        """, (metrics['cycle'],))
+        
+        row = cursor.fetchone()
+        metrics['adaptations'] = row['adaptation_count'] if row else 0
+        
+        conn.close()
+        
+        return metrics
     
-    def _add_legend(self) -> None:
-        """Add color legend to plot."""
-        legend_elements = [
-            mpatches.Patch(color=self.config.node_color_normal, label='Normal Node'),
-            mpatches.Patch(color=self.config.node_color_congested, label='Congested Node'),
-            mpatches.Patch(color=self.config.node_color_spillback, label='Spillback Node'),
-            mpatches.Patch(color=self.config.edge_color_normal, label='Normal Edge'),
-            mpatches.Patch(color=self.config.edge_color_high_cost, label='High Cost Edge'),
-            mpatches.Patch(color=self.config.edge_color_incident, label='Incident Edge')
-        ]
+    def _get_history_data(self, limit: int = 50) -> Dict:
+        """Query database for performance history."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
         
-        self.ax.legend(
-            handles=legend_elements,
-            loc='upper right',
-            fontsize=10,
-            framealpha=0.9
-        )
+        cursor.execute("""
+            SELECT 
+                cycle_number,
+                avg_trip_time,
+                total_spillbacks,
+                utility_score,
+                timestamp
+            FROM performance_metrics
+            ORDER BY cycle_number DESC
+            LIMIT ?
+        """, (limit,))
+        
+        history = []
+        for row in cursor.fetchall():
+            history.append({
+                'cycle': row['cycle_number'],
+                'avg_delay': row['avg_trip_time'] or 0,
+                'avg_trip_time': row['avg_trip_time'] or 0,
+                'network_cost': row['utility_score'] or 0,
+                'total_spillbacks': row['total_spillbacks'] or 0,
+                'timestamp': row['timestamp']
+            })
+        
+        conn.close()
+        
+        # Reverse to get chronological order
+        history.reverse()
+        
+        return {'history': history}
+
+
+def run_visualizer_standalone(db_path: str, host: str = '0.0.0.0', port: int = 5001):
+    """
+    Run visualizer as standalone application.
     
-    def _add_metrics_panel(self) -> None:
-        """Add metrics text panel to plot."""
-        metrics_text = (
-            f"Network Status\n"
-            f"─────────────\n"
-            f"Total Nodes: {len(self.graph.nodes)}\n"
-            f"Total Edges: {len(self.graph.edges)}\n"
-            f"Congested: {len(self.graph.get_congested_nodes())}\n"
-            f"Spillbacks: {len(self.graph.get_spillback_edges())}\n"
-            f"Active Incidents: {self._metrics_cache['incidents']}"
-        )
-        
-        self.ax.text(
-            0.02, 0.98,
-            metrics_text,
-            transform=self.ax.transAxes,
-            fontsize=10,
-            verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
-            family='monospace'
-        )
+    Usage:
+        python -m graph_manager.graph_visualizer /path/to/aegis.db
+    """
+    visualizer = GraphVisualizer(db_path=db_path, host=host, port=port)
+    visualizer.start()
+    
+    print(f"\n{'='*60}")
+    print(f"🌐 AEGIS LIGHTS - Web Visualizer")
+    print(f"{'='*60}")
+    print(f"Server: http://localhost:{port}")
+    print(f"Database: {db_path}")
+    print(f"")
+    print(f"Press Ctrl+C to stop...")
+    print(f"{'='*60}\n")
+    
+    try:
+        # Keep main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\nShutting down visualizer...")
+        visualizer.stop()
+
+
+if __name__ == "__main__":
+    import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='AEGIS LIGHTS Web Visualizer')
+    parser.add_argument('db_path', help='Path to SQLite database')
+    parser.add_argument('--host', default='0.0.0.0', help='Host address (default: 0.0.0.0)')
+    parser.add_argument('--port', type=int, default=5001, help='Port number (default: 5001)')
+    
+    args = parser.parse_args()
+    
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    run_visualizer_standalone(args.db_path, args.host, args.port)

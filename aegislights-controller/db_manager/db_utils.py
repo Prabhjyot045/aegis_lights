@@ -31,24 +31,42 @@ def close_connection(conn: sqlite3.Connection) -> None:
 
 
 def insert_snapshot(conn: sqlite3.Connection, cycle: int, timestamp: float,
-                   from_intersection: str, to_intersection: str,
+                   edge_id: str, from_intersection: str, to_intersection: str,
                    queue: int, delay: float, throughput: float,
                    spillback: bool, incident: bool) -> None:
-    """Insert a simulation snapshot using intersection IDs."""
+    """Insert a simulation snapshot with edge_id for CityFlow."""
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR REPLACE INTO simulation_snapshots
-        (cycle_number, timestamp, from_intersection, to_intersection,
+        (cycle_number, timestamp, edge_id, from_intersection, to_intersection,
          queue_length, delay, throughput, spillback_flag, incident_flag)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (cycle, timestamp, from_intersection, to_intersection,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (cycle, timestamp, edge_id, from_intersection, to_intersection,
           queue, delay, throughput, int(spillback), int(incident)))
     conn.commit()
 
 
-def update_graph_state(conn: sqlite3.Connection, from_intersection: str,
-                      to_intersection: str, updates: Dict[str, Any]) -> None:
-    """Update graph state for an edge using intersection IDs."""
+def update_graph_state(conn: sqlite3.Connection, edge_id: str,
+                      updates: Dict[str, Any]) -> None:
+    """Update graph state for an edge using edge_id."""
+    cursor = conn.cursor()
+    
+    set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
+    values = list(updates.values()) + [edge_id]
+    
+    cursor.execute(f"""
+        UPDATE graph_state 
+        SET {set_clause}
+        WHERE edge_id = ?
+    """, values)
+    conn.commit()
+
+
+def update_graph_state_by_intersections(conn: sqlite3.Connection, 
+                                       from_intersection: str,
+                                       to_intersection: str, 
+                                       updates: Dict[str, Any]) -> None:
+    """Update graph state for an edge using from/to intersections (legacy support)."""
     cursor = conn.cursor()
     
     set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
@@ -62,11 +80,33 @@ def update_graph_state(conn: sqlite3.Connection, from_intersection: str,
     conn.commit()
 
 
+def get_graph_state_by_edge_id(conn: sqlite3.Connection, 
+                               edge_id: Optional[str] = None) -> List[Dict]:
+    """
+    Get current graph state by edge_id.
+    
+    Args:
+        conn: Database connection
+        edge_id: Edge identifier (None = all edges)
+        
+    Returns:
+        List of edge state dictionaries
+    """
+    cursor = conn.cursor()
+    
+    if edge_id:
+        cursor.execute("SELECT * FROM graph_state WHERE edge_id = ?", (edge_id,))
+    else:
+        cursor.execute("SELECT * FROM graph_state")
+    
+    return [dict(row) for row in cursor.fetchall()]
+
+
 def get_graph_state(conn: sqlite3.Connection,
                    from_intersection: Optional[str] = None,
                    to_intersection: Optional[str] = None) -> List[Dict]:
     """
-    Get current graph state for edges.
+    Get current graph state for edges (legacy interface using from/to).
     
     Args:
         conn: Database connection
@@ -102,10 +142,14 @@ def get_outgoing_roads(conn: sqlite3.Connection, intersection_id: str) -> List[D
 
 
 def insert_or_update_graph_edge(conn: sqlite3.Connection,
+                               edge_id: str,
                                from_intersection: str,
                                to_intersection: str,
                                capacity: float,
                                free_flow_time: float,
+                               length: float = 0.0,
+                               is_virtual_source: bool = False,
+                               is_virtual_sink: bool = False,
                                current_queue: float = 0.0,
                                current_delay: float = 0.0,
                                current_flow: float = 0.0,
@@ -115,18 +159,19 @@ def insert_or_update_graph_edge(conn: sqlite3.Connection,
                                cycle_number: int = 0,
                                timestamp: float = 0.0) -> None:
     """
-    Insert or update a graph edge (road segment).
+    Insert or update a graph edge (road segment) using edge_id.
     
     Uses UPSERT to handle both insert and update in one operation.
+    Supports CityFlow edge format with virtual nodes.
     """
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO graph_state 
-        (from_intersection, to_intersection, capacity, free_flow_time,
-         current_queue, current_delay, current_flow, spillback_active, 
-         incident_active, edge_cost, last_updated_cycle, last_updated_timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(from_intersection, to_intersection) DO UPDATE SET
+        (edge_id, from_intersection, to_intersection, capacity, free_flow_time, length,
+         is_virtual_source, is_virtual_sink, current_queue, current_delay, current_flow, 
+         spillback_active, incident_active, edge_cost, last_updated_cycle, last_updated_timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(edge_id) DO UPDATE SET
             current_queue = excluded.current_queue,
             current_delay = excluded.current_delay,
             current_flow = excluded.current_flow,
@@ -135,24 +180,29 @@ def insert_or_update_graph_edge(conn: sqlite3.Connection,
             edge_cost = excluded.edge_cost,
             last_updated_cycle = excluded.last_updated_cycle,
             last_updated_timestamp = excluded.last_updated_timestamp
-    """, (from_intersection, to_intersection, capacity, free_flow_time,
+    """, (edge_id, from_intersection, to_intersection, capacity, free_flow_time, length,
+          int(is_virtual_source), int(is_virtual_sink),
           current_queue, current_delay, current_flow,
           int(spillback_active), int(incident_active),
           edge_cost, cycle_number, timestamp))
     conn.commit()
-    logger.debug(f"Upserted edge ({from_intersection} -> {to_intersection})")
+    logger.debug(f"Upserted edge {edge_id} ({from_intersection} -> {to_intersection})")
 def insert_signal_config(conn: sqlite3.Connection, intersection_id: str,
-                        cycle: int, timestamp: float, plan_id: str,
-                        green_splits: Dict, cycle_length: float, offset: float,
+                        cycle: int, timestamp: float, plan_id: str = None,
+                        phase_id: int = None, green_splits: Dict = None, 
+                        cycle_length: float = None, offset: float = 0.0,
                         is_incident_mode: bool = False) -> int:
-    """Insert signal configuration and return config_id."""
+    """Insert signal configuration and return config_id. Supports CityFlow phase_id."""
     cursor = conn.cursor()
+    
+    green_splits_json = json.dumps(green_splits) if green_splits else None
+    
     cursor.execute("""
         INSERT INTO signal_configurations
-        (intersection_id, cycle_number, timestamp, plan_id, green_splits, 
+        (intersection_id, cycle_number, timestamp, plan_id, phase_id, green_splits, 
          cycle_length, offset, is_incident_mode, applied)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-    """, (intersection_id, cycle, timestamp, plan_id, json.dumps(green_splits),
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    """, (intersection_id, cycle, timestamp, plan_id, phase_id, green_splits_json,
           cycle_length, offset, int(is_incident_mode)))
     conn.commit()
     return cursor.lastrowid

@@ -108,7 +108,8 @@ class Monitor:
                 'edges_updated': edges_updated,
                 'aggregates': aggregates,
                 'anomalies': anomalies,
-                'collection_time': self.stats['last_collection_time']
+                'collection_time': self.stats['last_collection_time'],
+                'average_travel_time': getattr(snapshot, 'average_travel_time', None)
             }
             
         except Exception as e:
@@ -154,21 +155,26 @@ class Monitor:
         for int_id, int_data in snapshot.intersections.items():
             # Ensure node exists in graph
             if not self.graph.has_node(int_id):
+                node_type = "virtual" if int_data.is_virtual else "signalized"
                 self.graph.add_node(GraphNode(
                     node_id=int_id,
-                    intersection_type="signalized"
+                    intersection_type=node_type
                 ))
             
             # Update each outgoing road
             for road in int_data.outgoing_roads:
                 from_int = int_id
                 to_int = road.to_intersection
+                edge_id = road.edge_id
                 
                 # Ensure destination node exists
                 if not self.graph.has_node(to_int):
+                    # Determine if destination is virtual
+                    dest_is_virtual = to_int in ['1', '2', '3', '4', '5', '6', '7', '8']
+                    dest_type = "virtual" if dest_is_virtual else "signalized"
                     self.graph.add_node(GraphNode(
                         node_id=to_int,
-                        intersection_type="signalized"
+                        intersection_type=dest_type
                     ))
                 
                 # Create or update edge
@@ -195,9 +201,14 @@ class Monitor:
                     edge.spillback_active = road.spillback_active
                     edge.incident_active = road.incident_active
                 
-                # Update in database through knowledge base
-                self.knowledge.update_edge_state(
-                    from_int, to_int,
+                # Update in database through knowledge base (using edge_id)
+                self.knowledge.update_edge_state_by_edge_id(
+                    edge_id=edge_id,
+                    from_intersection=from_int,
+                    to_intersection=to_int,
+                    capacity=road.capacity,
+                    free_flow_time=road.free_flow_time,
+                    length=road.length or 0.0,
                     queue=road.current_queue,
                     delay=road.current_delay or 0.0,
                     flow=road.current_flow or 0.0,
@@ -350,6 +361,7 @@ class Monitor:
                     self.knowledge.insert_snapshot(
                         cycle=cycle,
                         timestamp=snapshot.timestamp,
+                        edge_id=road.edge_id,
                         from_intersection=int_id,
                         to_intersection=road.to_intersection,
                         queue=int(road.current_queue),

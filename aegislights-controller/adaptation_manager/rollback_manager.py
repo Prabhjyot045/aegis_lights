@@ -84,37 +84,40 @@ class RollbackManager:
         Calculate utility score from metrics.
         Higher is better (lower cost = higher utility).
         
+        Uses network cost as primary metric (sum of edge costs).
+        Lower cost = higher utility.
+        
         Args:
             metrics: Performance metrics dict
             
         Returns:
-            Utility score (negative of total cost)
+            Utility score (negative of network cost)
         """
-        # Components of cost (all negative contributors)
-        avg_trip_time = metrics.get('avg_trip_time', 0)
-        p95_trip_time = metrics.get('p95_trip_time', 0)
+        # Primary cost metric: network cost (sum of edge costs)
+        network_cost = metrics.get('network_cost', 0)
+        avg_delay = metrics.get('avg_delay', 0)
+        avg_queue = metrics.get('avg_queue', 0)
         total_spillbacks = metrics.get('total_spillbacks', 0)
-        total_stops = metrics.get('total_stops', 0)
-        incident_clearance = metrics.get('incident_clearance_time', 0)
         
-        # Weight factors for different cost components
-        time_weight = 1.0        # Cost per second of average travel time
-        p95_weight = 0.5         # Cost for tail latency
-        spillback_penalty = 20.0 # High penalty for spillback events
-        stop_cost = 0.1          # Cost per vehicle stop (fuel, emissions)
-        incident_weight = 5.0    # Cost for unresolved incidents
+        # Utility is negative cost (higher utility = better performance)
+        # Weight factors for edge-based cost components
+        delay_weight = 1.0       # Cost per second of average delay
+        queue_weight = 0.5       # Cost for queue length
+        spillback_penalty = 10.0 # High penalty per spillback edge
+        network_weight = 1.0     # Overall network cost weight
         
-        # Calculate total cost
+        # Calculate total cost using edge-based metrics
         total_cost = (
-            avg_trip_time * time_weight +
-            p95_trip_time * p95_weight +
-            total_spillbacks * spillback_penalty +
-            total_stops * stop_cost +
-            incident_clearance * incident_weight
+            network_cost * network_weight +
+            avg_delay * delay_weight +
+            avg_queue * queue_weight +
+            total_spillbacks * spillback_penalty
         )
         
         # Utility is negative of cost (higher utility = better performance)
         utility = -total_cost
+        
+        logger.debug(f"Utility: {utility:.2f} (cost={total_cost:.2f}, network={network_cost:.2f})")
         return utility
     
     def reset(self) -> None:

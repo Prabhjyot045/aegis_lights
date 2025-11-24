@@ -16,17 +16,20 @@ EXPECTED_TABLES = [
     'phase_libraries',
     'performance_metrics',
     'adaptation_decisions',
-    'bandit_state'
+    'bandit_state',
+    'cycle_logs'
 ]
 
 EXPECTED_INDICES = [
     'idx_snapshots_cycle',
-    'idx_snapshots_edge',
+    'idx_snapshots_edge_id',
     'idx_graph_from_intersection',
     'idx_graph_to_intersection',
     'idx_configs_cycle',
+    'idx_configs_intersection',
     'idx_metrics_cycle',
-    'idx_decisions_cycle'
+    'idx_decisions_cycle',
+    'idx_cycle_logs_cycle'
 ]
 
 
@@ -47,12 +50,13 @@ def initialize_database(db_path: str) -> str:
     cursor = conn.cursor()
     
     # Table 1: simulation_snapshots (Historical Data)
-    # Using composite edge identifier (from_intersection, to_intersection)
+    # Stores edge-level traffic data from CityFlow per cycle
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS simulation_snapshots (
             snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
             cycle_number INTEGER NOT NULL,
             timestamp REAL NOT NULL,
+            edge_id TEXT NOT NULL,
             from_intersection TEXT NOT NULL,
             to_intersection TEXT NOT NULL,
             queue_length INTEGER,
@@ -60,18 +64,22 @@ def initialize_database(db_path: str) -> str:
             throughput REAL,
             spillback_flag INTEGER,
             incident_flag INTEGER,
-            UNIQUE(cycle_number, from_intersection, to_intersection)
+            UNIQUE(cycle_number, edge_id)
         )
     """)
     
     # Table 2: graph_state (Runtime Model - Current State)
-    # Using composite primary key (from_intersection, to_intersection)
+    # Stores current state of each edge in the network
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_state (
+            edge_id TEXT PRIMARY KEY,
             from_intersection TEXT NOT NULL,
             to_intersection TEXT NOT NULL,
+            is_virtual_source INTEGER DEFAULT 0,
+            is_virtual_sink INTEGER DEFAULT 0,
             capacity REAL NOT NULL,
             free_flow_time REAL NOT NULL,
+            length REAL DEFAULT 0.0,
             current_queue REAL DEFAULT 0.0,
             current_delay REAL DEFAULT 0.0,
             current_flow REAL DEFAULT 0.0,
@@ -79,12 +87,12 @@ def initialize_database(db_path: str) -> str:
             incident_active INTEGER DEFAULT 0,
             last_updated_cycle INTEGER DEFAULT 0,
             edge_cost REAL DEFAULT 0.0,
-            last_updated_timestamp REAL,
-            PRIMARY KEY (from_intersection, to_intersection)
+            last_updated_timestamp REAL
         )
     """)
     
     # Table 3: signal_configurations (Adaptation Actions)
+    # Tracks signal phase changes applied to CityFlow intersections
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS signal_configurations (
             config_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,7 +100,8 @@ def initialize_database(db_path: str) -> str:
             cycle_number INTEGER NOT NULL,
             timestamp REAL NOT NULL,
             plan_id TEXT,
-            green_splits TEXT,  -- JSON
+            phase_id INTEGER,
+            green_splits TEXT,
             cycle_length REAL,
             offset REAL,
             is_incident_mode INTEGER DEFAULT 0,
@@ -155,19 +164,33 @@ def initialize_database(db_path: str) -> str:
         )
     """)
     
+    # Table 8: cycle_logs (Execution Logging)
+    # Logs execution events and rollbacks for debugging
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cycle_logs (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            timestamp REAL NOT NULL,
+            data TEXT
+        )
+    """)
+    
     # Create indices for performance
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_cycle ON simulation_snapshots(cycle_number)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_edge ON simulation_snapshots(from_intersection, to_intersection)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_edge_id ON simulation_snapshots(edge_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_from_intersection ON graph_state(from_intersection)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_to_intersection ON graph_state(to_intersection)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_configs_cycle ON signal_configurations(cycle_number)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_configs_intersection ON signal_configurations(intersection_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_metrics_cycle ON performance_metrics(cycle_number)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_decisions_cycle ON adaptation_decisions(cycle_number)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cycle_logs_cycle ON cycle_logs(cycle)")
     
     conn.commit()
     conn.close()
     
-    logger.info(f"Database initialized with 7 tables at: {db_path.absolute()}")
+    logger.info(f"Database initialized with 8 tables at: {db_path.absolute()}")
     return str(db_path.absolute())
 
 

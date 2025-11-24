@@ -24,13 +24,14 @@ def cleanup_database(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # Clear all tables
+    # Clear all tables (except graph_state which gets reset)
     tables = [
         'simulation_snapshots',
         'signal_configurations',
         'performance_metrics',
         'adaptation_decisions',
-        'bandit_state'
+        'bandit_state',
+        'cycle_logs'
     ]
     
     for table in tables:
@@ -40,12 +41,14 @@ def cleanup_database(db_path: str) -> None:
     # Reset graph_state (but keep structure)
     cursor.execute("""
         UPDATE graph_state 
-        SET current_queue = 0,
+        SET current_queue = 0.0,
             current_delay = 0.0,
+            current_flow = 0.0,
             spillback_active = 0,
             incident_active = 0,
             last_updated_cycle = 0,
-            edge_cost = 0.0
+            edge_cost = 0.0,
+            last_updated_timestamp = NULL
     """)
     logger.debug("Reset graph_state to initial values")
     

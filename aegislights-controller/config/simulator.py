@@ -9,18 +9,15 @@ class SimulatorConfig:
     
     # Connection details
     host: str = "localhost"
-    port: int = 8080
-    base_url: str = "http://localhost:8080"
+    port: int = 5000
+    base_url: str = "http://localhost:5000"
     
-    # API endpoints
-    endpoint_get_network: str = "/api/network/snapshot"  # New intersection-based endpoint
-    endpoint_get_topology: str = "/api/network/topology"  # Static topology
-    endpoint_get_edges: str = "/api/edges"  # Legacy endpoint
-    endpoint_get_edge: str = "/api/edges/{edge_id}"
-    endpoint_set_signal: str = "/api/signals/{intersection_id}"
-    endpoint_inject_incident: str = "/api/incidents"
-    endpoint_get_vehicles: str = "/api/vehicles"
-    endpoint_get_metrics: str = "/api/metrics"
+    # API endpoints (CityFlow)
+    endpoint_get_network: str = "/api/v1/snapshots/latest"  # Get latest traffic snapshot
+    endpoint_set_signal: str = "/api/v1/intersections/{intersection_id}/plan"  # Apply signal plan
+    endpoint_get_travel_time: str = "/api/v1/gettraveltime"  # Get average travel times
+    endpoint_get_file_paths: str = "/api/v1/files/paths"  # Get config file paths
+    endpoint_health: str = "/health"  # Health check
     
     # Connection parameters
     timeout_seconds: int = 30

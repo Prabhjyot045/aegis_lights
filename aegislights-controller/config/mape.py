@@ -8,7 +8,7 @@ class MAPEConfig:
     """Configuration for MAPE-K control loop."""
     
     # Loop timing
-    cycle_period_seconds: int = 60  # Control cycle period
+    cycle_period_seconds: int = 6  # Control cycle period (60 sim seconds at 0.1s/step)
     
     # Monitor parameters
     rolling_window_size: int = 5  # Number of cycles for smoothing

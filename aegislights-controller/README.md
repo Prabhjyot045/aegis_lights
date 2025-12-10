@@ -1,483 +1,291 @@
-# AegisLights Traffic Control System
+# AegisLights Controller
 
-**Adaptive Traffic Signal Control using MAPE-K Self-Adaptation with CityFlow**
-
-A research implementation of intelligent traffic signal control that uses runtime self-adaptation to minimize travel time and prevent network congestion. The controller continuously adapts signal timing based on real-time traffic conditions from the CityFlow simulator.
+**Self-Adaptive Traffic Signal Control using MAPE-K with CityFlow Simulator**
 
 ---
 
-## 🎯 Overview
+## Overview
 
-AegisLights implements a MAPE-K (Monitor-Analyze-Plan-Execute over shared Knowledge) control loop integrated with CityFlow simulator. The controller:
+AegisLights implements a MAPE-K (Monitor-Analyze-Plan-Execute-Knowledge) control loop that continuously adapts traffic signal timing to minimize average trip time. The controller connects to a CityFlow traffic simulator and uses a contextual bandit algorithm for decision-making.
 
-- **Monitors** real-time traffic from CityFlow (queue lengths, delays, incidents)
-- **Analyzes** congestion patterns and identifies alternative routes  
-- **Plans** signal timing adaptations using contextual multi-armed bandits
-- **Executes** changes safely with validation and automatic rollback
-- **Learns** from experience to improve future decisions
-
-**Key Feature**: Controller runs **continuously** (indefinitely) adapting every N seconds until the CityFlow simulator stops responding or you press Ctrl+C. Network topology, traffic demand, and scenarios are all determined by CityFlow configuration, not by the controller.
+**Key Features:**
+- Real-time traffic monitoring from CityFlow
+- Predictive analysis using trend forecasting and queue penalties
+- Contextual bandit (UCB/Thompson Sampling) for plan selection
+- Automatic incident detection and response
+- Web-based visualization dashboard
+- Experimental comparison tools
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-### Prerequisites
-
-```bash
-# Python 3.10+ required
-conda activate aegis_lights  # ALWAYS activate environment first
-
-# CityFlow simulator must be running
-# Check: curl http://localhost:5000/health
-```
-
-### Installation
+### 1. Setup Environment
 
 ```bash
 cd aegislights-controller
 
-# Create conda environment
-conda create -n aegis_lights python=3.10
-conda activate aegis_lights
+# Create conda environment from environment.yml
+conda env create -f environment.yml
 
-# Install dependencies
-pip install -r requirements.txt
-pip install flask flask-cors  # For web visualizer
+# Activate environment
+conda activate aegis_lights
 ```
 
-### Database Setup
+### 2. Initialize Database
 
 ```bash
 conda activate aegis_lights
 python db_manager/setup_db.py
 ```
 
-Creates `data/aegis_lights.db` with 8 tables for logging and state management.
-
-### Running the Controller
+### 3. Start CityFlow Simulator (separate terminal)
 
 ```bash
-# IMPORTANT: Always activate conda environment first!
-conda activate aegis_lights
-
-# Start controller (runs indefinitely)
+cd ../cityflow/script
 python main.py
 ```
 
-The controller will:
-1. Connect to CityFlow at `http://localhost:5000`
-2. Start web visualizer at `http://localhost:5001` 
-3. Begin MAPE-K control loop (60-second cycles by default)
-4. Adapt signal phases every cycle based on traffic
-5. Run until simulator stops or you press Ctrl+C
+### 4. Run Controller (seperate terminal)
 
-**View Live Visualization**: http://localhost:5001
+```bash
+conda activate aegis_lights
+python main.py
+```
+
+### 5. View Dashboard
+
+Open http://localhost:5001 in your browser.
 
 ---
 
-## 📊 System Architecture
+## Running Experiments
 
-### MAPE-K Loop with CityFlow
+### Control Baseline (No Adaptation)
 
-```
-┌────────────────────────────────────────────────┐
-│      CityFlow Simulator (Port 5000)            │
-│  - 5 Signalized Intersections (A-E)           │
-│  - 8 Virtual Nodes (1-8)                      │
-│  - 28 Directed Edges                          │
-│  - 4-Phase Timing Control                     │
-└──────┬──────────────────────────┬──────────────┘
-       │ HTTP API                 │ Phase Commands
-       │ /snapshots/latest        │ /intersections/{id}/plan
-       ▼                          ▲
-  ┌─────────┐              ┌──────────┐
-  │ MONITOR │◄─────────────┤ Knowledge│
-  └────┬────┘              │   Base   │
-       │                   │ (SQLite) │
-  ┌────▼────┐              └────▲─────┘
-  │ ANALYZE │◄──────────────────┤
-  └────┬────┘                   │
-       │                        │
-  ┌────▼────┐                   │
-  │  PLAN   │◄──────────────────┤
-  └────┬────┘                   │
-       │                        │
-  ┌────▼────┐                   │
-  │ EXECUTE │───────────────────►
-  └────┬────┘
-       │
-       ▼ Apply to CityFlow
+Collect baseline data without any signal adaptations:
+
+```bash
+# Run for 360 seconds (3600 simulation steps at 0.1s/step)
+python control_baseline.py --duration 360 --output data/baseline.csv
 ```
 
-### CityFlow Network Topology
+### Experimental Run (With MAPE-K Adaptation)
 
-```
-      1           3
-      ↓           ↓
-  ┌───A───┐   ┌───B───┐
-2→│  🚦  │──→│  🚦  │→4
-  └───┬───┘   └───┬───┘
-      │           │
-  ┌───C───┐   ┌───D───┐
-5→│  🚦  │←──│  🚦  │→7
-  └───┬───┘   └───┬───┘
-      │           │
-  ┌───E───┐       8
-6→│  🚦  │
-  └───────┘
+```bash
+# Reset database for fresh experiment
+python db_manager/cleanup_db.py
+python db_manager/setup_db.py
 
-🚦 = Signalized (A-E)
-1-8 = Virtual nodes
-→ = Directed edges
+# Run controller (data saved to database automatically)
+python main.py
 ```
 
-- 5 signalized intersections with 4-phase control
-- 8 virtual entry/exit points  
-- 28 total directed edges
-- Phase IDs: 0-3 per intersection
+### Generate Comparison Graph
+
+Compare control vs experimental results:
+
+```bash
+python plot_comparison.py \
+    --control data/baseline.csv \
+    --db data/aegis_lights.db \
+    --output output/comparison.png
+```
 
 ---
 
-## ⚙️ Configuration
+## Database Management
+
+### Reset Database
+Delete the data/aegis_lights.db and setup again.
+
+```bash
+python db_manager/setup_db.py
+```
+
+### Export Data
+
+Data is automatically exported to `output/experiments/` when the controller stops.
+
+---
+
+## Visualization
+
+### Start with Controller (Default)
+
+The web visualizer starts automatically with `main.py` on port 5001.
+
+### Standalone Visualizer
+
+```bash
+python run_visualizer.py data/aegis_lights.db --port 5001
+```
+
+### Access Dashboard
+
+- URL: http://localhost:5001
+- Features: Live graph, metrics, trend charts
+- Auto-refresh: Every 5 seconds
+
+---
+
+## Configuration
 
 ### MAPE Loop Settings (`config/mape.py`)
 
 ```python
-@dataclass
-class MAPEConfig:
-    cycle_period_seconds: int = 60  # How often to adapt
-    
-    # Monitor
-    rolling_window_size: int = 5  # Smoothing window
-    
-    # Analyze
-    hotspot_threshold: float = 0.7  # 70th percentile
-    k_shortest_paths: int = 3  # Alternative routes
-    
-    # Plan
-    bandit_algorithm: str = "ucb"  # or "thompson_sampling"
-    exploration_factor: float = 0.2
-    
-    # Execute
-    enable_rollback: bool = True
-    performance_degradation_threshold: float = 0.1  # 10%
+cycle_period_seconds = 3      # How often to adapt
+bandit_algorithm = "ucb"      # or "thompson_sampling"
+exploration_factor = 0.2      # Bandit exploration rate
 ```
 
 ### Simulator Connection (`config/simulator.py`)
 
 ```python
-@dataclass
-class SimulatorConfig:
-    host: str = "localhost"
-    port: int = 5000
-    base_url: str = "http://localhost:5000"
-    
-    endpoint_get_network: str = "/api/v1/snapshots/latest"
-    endpoint_set_signal: str = "/api/v1/intersections/{intersection_id}/plan"
-    endpoint_health: str = "/health"
-    
-    timeout_seconds: int = 30
-    retry_attempts: int = 3
+host = "localhost"
+port = 5000
 ```
 
-### Runtime Settings (`config/experiment.py`)
+### Experiment Settings (`config/experiment.py`)
 
 ```python
-@dataclass
-class ExperimentConfig:
-    name: str = "aegis_experiment_001"
-    
-    # Duration: None = run indefinitely until simulator stops
-    max_duration_seconds: int = None  # Or set to 3600 for 1 hour
-    
-    # Database path (auto-set if None)
-    db_path: str = None  # Defaults to data/aegis_lights.db
-    
-    # Visualization
-    enable_web_visualizer: bool = True  # Web-based (recommended)
-    record_visualization: bool = False  # Matplotlib video
+max_duration_seconds = None   # None = run indefinitely
+enable_web_visualizer = True
 ```
 
-**Important**: Network topology, traffic demand, and incident scenarios are controlled by CityFlow's configuration files (`cityflow/net_config/`), not by the controller.
-
 ---
 
-## 🔄 MAPE-K Components
-
-### Monitor Stage
-- **What**: Polls CityFlow API for traffic state
-- **Input**: Lane-level data (AB_0, AB_1, ...)
-- **Process**: Aggregates lanes → edges, detects anomalies
-- **Output**: Updated graph with queues, delays, incidents
-- **Frequency**: Every MAPE cycle (60s default)
-
-### Analyze Stage  
-- **What**: Identifies congestion patterns
-- **Process**: 
-  - Compute edge costs: `1.0·delay + 0.5·queue + 10·spillback + 20·incident`
-  - Find hotspots (>70th percentile)
-  - Find k=3 bypass routes
-  - Predict trends (exponential smoothing)
-- **Output**: Hotspots, bypasses, targets, coordination groups
-
-### Plan Stage
-- **What**: Selects optimal signal plans
-- **Process**:
-  - Build context [queue_ratio, delay, time, incident_flag]
-  - Query phase library for valid plans
-  - Use contextual bandit (UCB) to select
-  - Calculate offsets for coordination
-- **Output**: List of signal adaptations (phase IDs per intersection)
-
-### Execute Stage
-- **What**: Safely applies signal changes
-- **Process**:
-  - Validate safety (NEMA conflicts, clearance times)
-  - POST phase to CityFlow: `/api/v1/intersections/{id}/plan`
-  - Track performance
-  - Auto-rollback if degradation detected
-- **Output**: Applied configurations, performance logs
-
-### Knowledge Base
-- **What**: Shared state and history
-- **Storage**: SQLite database (8 tables) + in-memory cache
-- **Tables**: snapshots, graph_state, signal_configurations, phase_libraries, performance_metrics, adaptation_decisions, bandit_state, cycle_logs
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 aegislights-controller/
-├── main.py                     # Entry point - starts controller
-├── run_visualizer.py           # Standalone web visualizer
-├── requirements.txt            # Dependencies
+├── main.py                 # Entry point
+├── control_baseline.py     # Baseline data collection
+├── plot_comparison.py      # Generate comparison graphs
+├── run_visualizer.py       # Standalone visualizer
 │
-├── config/                     # Configuration
-│   ├── experiment.py          # Runtime settings
-│   ├── mape.py                # MAPE parameters
-│   ├── costs.py               # Cost coefficients
-│   ├── simulator.py           # CityFlow connection
-│   └── visualization.py       # Visualizer settings
+├── adaptation_manager/     # MAPE-K implementation
+│   ├── loop_controller.py  # Main orchestration
+│   ├── monitor.py          # Data collection from CityFlow
+│   ├── analyze.py          # Trend prediction & hotspot detection
+│   ├── plan.py             # Bandit-based plan selection
+│   ├── execute.py          # Apply signal changes
+│   ├── knowledge.py        # Database interface
+│   ├── bandit.py           # Contextual bandit algorithm
+│   └── metrics.py          # Performance calculation
 │
-├── adaptation_manager/         # MAPE-K implementation
-│   ├── loop_controller.py     # Orchestration
-│   ├── monitor.py             # CityFlow polling
-│   ├── analyze.py             # Pattern detection
-│   ├── plan.py                # Bandit planning
-│   ├── execute.py             # Safe actuation
-│   ├── knowledge.py           # Knowledge base
-│   ├── bandit.py              # Contextual bandit
-│   ├── safety_validator.py    # NEMA constraints
-│   ├── rollback_manager.py    # Performance watchdog
-│   └── metrics.py             # Performance calculation
+├── graph_manager/          # Traffic network model
+│   ├── graph_model.py      # Node/Edge data structures
+│   ├── graph_utils.py      # CityFlow data transformation
+│   └── graph_visualizer.py # Flask web server + D3.js
 │
-├── graph_manager/              # Graph model
-│   ├── graph_model.py         # Data structures
-│   ├── graph_utils.py         # Algorithms, CityFlow integration
-│   ├── graph_visualizer.py    # Web visualizer (Flask)
-│   └── templates/
-│       └── visualizer.html    # D3.js frontend
+├── api/                    # CityFlow communication
+│   ├── simulator_client.py # HTTP client
+│   ├── endpoints.py        # API methods
+│   └── data_schemas.py     # Data models
 │
-├── api/                        # CityFlow communication
-│   ├── simulator_client.py    # HTTP client
-│   ├── endpoints.py           # API methods
-│   ├── data_schemas.py        # Pydantic models
-│   └── example_input_format.py  # Data format docs
+├── db_manager/             # Database layer
+│   ├── setup_db.py         # Initialize database
+│   ├── cleanup_db.py       # Reset database
+│   └── db_utils.py         # CRUD operations
 │
-├── db_manager/                 # Database layer
-│   ├── init_db.py             # Schema
-│   ├── setup_db.py            # Setup script
-│   ├── db_utils.py            # CRUD operations
-│   └── cleanup_db.py          # Reset
+├── config/                 # Configuration files
+│   ├── mape.py             # MAPE loop settings
+│   ├── simulator.py        # CityFlow connection
+│   └── experiment.py       # Runtime settings
 │
-└── tests/                      # Test suite (30+ tests)
+└── data/                   # Database storage
+    └── aegis_lights.db     # SQLite database
 ```
 
 ---
 
-## 🎨 Visualization
+## MAPE-K Loop
 
-### Web-Based Visualizer (Port 5001)
+Each cycle (default 3 seconds):
 
-**Features**:
-- Real-time updates (2-second auto-refresh)
-- Interactive D3.js force-directed graph
-- Color-coded status (Green→Orange→Red)
-- Live metrics dashboard
-- Performance history charts
-- Standalone operation (queries database)
+1. **Monitor**: Query CityFlow for traffic state (queues, delays, incidents)
+2. **Analyze**: Identify hotspots, predict trends, find bypass routes
+3. **Plan**: Select optimal signal phases using contextual bandit
+4. **Execute**: Apply phase changes to CityFlow intersections
+5. **Knowledge**: Store metrics and update bandit rewards
 
-**Usage**:
+### Reward Function (Optimization Objective)
 
+```python
+reward = -avg_trip_time - (spillbacks * 50) - (avg_queue * 2.0)
+```
+
+- Primary: Minimize average trip time
+- Predictive: Queue penalty prevents future congestion
+- Safety: Heavy spillback penalty
+
+---
+
+## Troubleshooting
+
+### Cannot connect to simulator
 ```bash
-# Automatic (started by main.py if enable_web_visualizer=True)
-python main.py
-
-# Or standalone
-python run_visualizer.py data/aegis_lights.db --host 0.0.0.0 --port 5001
-```
-
-**Access**: http://localhost:5001
-
-**Elements**:
-- **Nodes**: Blue (signalized A-E), Gray (virtual 1-8)
-- **Edges**: Color by cost, width by queue
-- **Metrics**: Cycle, delay, incidents, adaptations
-- **Charts**: Cost trend, delay trend
-
----
-
-## 🧪 Testing
-
-```bash
-conda activate aegis_lights
-
-# All tests
-pytest tests/ -v
-
-# Passing tests (100%)
-pytest tests/test_analyze.py -v       # 8/8
-pytest tests/test_execute.py -v      # 4/4
-pytest tests/test_graph_export_viz.py -v  # 8/8
-
-# With coverage
-pytest tests/ --cov=. --cov-report=html
-```
-
----
-
-## 🔧 How It Works
-
-### Complete MAPE Cycle (Every 60 seconds)
-
-```
-1. MONITOR (5-10s)
-   ├─ GET http://localhost:5000/api/v1/snapshots/latest
-   ├─ Aggregate lanes → edges
-   ├─ Update graph_state table
-   └─ Store snapshot
-
-2. ANALYZE (2-5s)
-   ├─ Compute edge costs
-   ├─ Identify hotspots (>70th percentile)
-   ├─ Find k=3 bypass routes
-   └─ Determine targets
-
-3. PLAN (5-10s)
-   ├─ Build context features
-   ├─ Query phase library
-   ├─ Bandit selection (UCB)
-   ├─ Calculate offsets
-   └─ Create adaptations
-
-4. EXECUTE (2-5s)
-   ├─ Validate safety (NEMA)
-   ├─ POST /api/v1/intersections/{id}/plan
-   ├─ Check performance
-   └─ Rollback if degraded
-
-Total: 15-30 seconds
-Wait: 30-45 seconds until next cycle
-```
-
----
-
-## 🛠️ Troubleshooting
-
-**Cannot connect to simulator**
-```bash
-# Check CityFlow is running
 curl http://localhost:5000/health
-
-# Start CityFlow if needed
-cd cityflow/script
-python main.py
+# If fails, start CityFlow: cd ../cityflow/script && python main.py
 ```
 
-**Database not found**
+### Database not found
 ```bash
-conda activate aegis_lights
 python db_manager/setup_db.py
 ```
 
-**Flask not found**
+### Port 5001 in use
+```bash
+lsof -ti:5001 | xargs kill -9
+```
+
+### Port 5000 in use (simulator)
+```bash
+lsof -ti:5000 | xargs kill -9
+```
+
+---
+
+## Testing
+
 ```bash
 conda activate aegis_lights
-pip install flask flask-cors
-```
-
-**Visualizer port in use**
-```bash
-# Change port
-python run_visualizer.py data/aegis_lights.db --port 5002
-```
-
-**Controller stops unexpectedly**
-- Check CityFlow is still running
-- Check simulator logs for errors
-- Verify network connectivity
-
----
-
-## 📚 Additional Documentation
-
-- `WEB_VISUALIZER_GUIDE.md` - Web visualizer docs
-- `VISUALIZER_QUICKSTART.md` - Visualizer quick start
-- `DATABASE_SCHEMA_REFERENCE.md` - SQL reference
-- `SYSTEM_VERIFICATION.md` - Architecture verification
-- `QUICKSTART.md` - Quick start guide
-
----
-
-## 🎓 Research Applications
-
-### Research Questions
-
-**RQ1**: Performance vs fixed-time baseline?
-- Metrics: Avg trip time, P95, throughput
-- Hypothesis: 15-25% improvement
-
-**RQ2**: Incident-aware planning benefits?
-- Metrics: Clearance time, spillback frequency  
-- Hypothesis: 30-40% faster clearance
-
-**RQ3**: Bandit learning improvement?
-- Metrics: Reward progression
-- Hypothesis: Monotonic improvement
-
-### Running Experiments
-
-```bash
-# 1. Configure CityFlow (cityflow/net_config/)
-# 2. Set experiment params (config/experiment.py)
-# 3. Run controller
-conda activate aegis_lights
-python main.py
-
-# 4. Let run for N hours
-# 5. Export data
-python -c "from db_manager import export_experiment_data; ..."
-
-# 6. Analyze results
+pytest tests/ -v
 ```
 
 ---
 
-## 🎉 Summary
+## Network Topology
 
-AegisLights: Production-ready adaptive traffic control with CityFlow
+CityFlow simulates a 5-intersection grid:
 
-✅ **Continuous Adaptation** - Runs indefinitely, adapts every 60s  
-✅ **Learns from Experience** - Contextual bandit improves over time  
-✅ **Safety Guaranteed** - NEMA validation + auto-rollback  
-✅ **Real-time Visualization** - Web interface with D3.js  
-✅ **Fully Tested** - 30+ tests, core logic 100%  
-✅ **Production Ready** - Logging, error handling, graceful shutdown  
+```
+    1           3
+    ↓           ↓
+┌───A───┐   ┌───B───┐
+│  🚦   │──→│  🚦   │→4
+└───┬───┘   └───┬───┘
+    │           │
+┌───C───┐   ┌───D───┐
+│  🚦   │←──│  🚦   │→7
+└───┬───┘   └───┬───┘
+    │           
+┌───E───┐       8
+│  🚦   │
+└───────┘
+    ↓
+    6
 
-**Start Now**: Launch CityFlow, then run `python main.py`
+🚦 = Signalized intersection (A-E)
+1-8 = Virtual entry/exit nodes
+```
+
+- 5 signalized intersections
+- 8 virtual nodes
+- 28 directed edges
+- 4 signal phases per intersection
 
 ---
 
-*Version: 2.0 | Updated: November 23, 2025 | Status: Production Ready*
+*ECE 750 - Self-Adaptive Systems*

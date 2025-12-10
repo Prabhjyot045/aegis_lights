@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db_manager import initialize_database, verify_database
+from db_manager.phase_library import PhaseLibrary
 from config.experiment import ExperimentConfig
 
 
@@ -49,9 +50,6 @@ def main():
             print(f"\nIndices created:")
             for index in verification['indices']:
                 print(f"  - {index}")
-            
-            print(f"\nDatabase is ready for use! 🎉")
-            return 0
         else:
             print(f"✗ Database verification failed")
             print(f"  Missing tables: {verification.get('missing_tables', [])}")
@@ -60,6 +58,41 @@ def main():
     except Exception as e:
         print(f"✗ Error verifying database: {e}")
         return 1
+    
+    # Initialize phase library
+    print(f"\n" + "=" * 80)
+    print("Phase Library Initialization")
+    print("=" * 80)
+    
+    try:
+        phase_lib = PhaseLibrary(db_path)
+        print(f"✓ Phase library initialized")
+    except Exception as e:
+        print(f"✗ Error initializing phase library: {e}")
+        return 1
+    
+    # Load default plans for all signalized intersections
+    print(f"\nLoading default signal timing plans...")
+    try:
+        phase_lib.load_default_plans()
+        print(f"✓ Default plans loaded successfully")
+        
+        # Show what was loaded
+        print(f"\nSignal timing plans created:")
+        for intersection_id in PhaseLibrary.SIGNALIZED_INTERSECTIONS:
+            plans = phase_lib.get_plans(intersection_id)
+            print(f"  Intersection {intersection_id}: {len(plans)} plans")
+        
+    except Exception as e:
+        print(f"✗ Error loading default plans: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    
+    print(f"\n" + "=" * 80)
+    print(f"✓ Database is ready for use! 🎉")
+    print("=" * 80)
+    return 0
 
 
 if __name__ == "__main__":
